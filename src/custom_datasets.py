@@ -18,11 +18,13 @@ class ImagesOnly(Dataset):
         
 # 1) Define your transforms
 mnist_transforms = transforms.Compose([
+    transforms.Pad(2),                              # [0,255]→[0,1]
     transforms.ToTensor(),                              # [0,255]→[0,1]
     transforms.Normalize((0.1307,), (0.3081,))          # mean/std for MNIST
 ])
 
 mnist_transforms_raw = transforms.Compose([
+    transforms.Pad(2),                              # [0,255]→[0,1]
     transforms.ToTensor(),                              # [0,255]→[0,1]
 ])
 

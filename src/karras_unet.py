@@ -687,7 +687,6 @@ class MPImageTransformer(Module):
         return x
 
 # works best with inverse square root decay schedule
-
 def InvSqrtDecayLRSched(
     optimizer,
     t_ref = 70000,

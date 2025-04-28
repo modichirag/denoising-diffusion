@@ -221,12 +221,15 @@ class GaussianDiffusion(Module):
 
         if isinstance(image_size, int):
             image_size = (image_size, image_size)
-        assert isinstance(image_size, (tuple, list)) and len(image_size) == 2, 'image size must be a integer or a tuple/list of two integers'
+        assert isinstance(image_size, (tuple, list)) and len(image_size) == 2, \
+            'image size must be a integer or a tuple/list of two integers'
         self.image_size = image_size
 
         self.objective = objective
 
-        assert objective in {'pred_noise', 'pred_x0', 'pred_v'}, 'objective must be either pred_noise (predict noise) or pred_x0 (predict image start) or pred_v (predict v [v-parameterization as defined in appendix D of progressive distillation paper, used in imagen-video successfully])'
+        assert objective in {'pred_noise', 'pred_x0', 'pred_v'}, \
+            'objective must be either pred_noise (predict noise) or pred_x0 (predict image start) or \
+            pred_v (predict v [v-parameterization as defined in appendix D of progressive distillation paper, used in imagen-video])'
 
         if beta_schedule == 'linear':
             beta_schedule_fn = linear_beta_schedule
@@ -247,7 +250,7 @@ class GaussianDiffusion(Module):
         self.num_timesteps = int(timesteps)
 
         # sampling related parameters
-        self.sampling_timesteps = default(sampling_timesteps, timesteps) # default num sampling timesteps to number of timesteps at training
+        self.sampling_timesteps = default(sampling_timesteps, timesteps) # default #sampling timesteps to #timesteps at training
         assert self.sampling_timesteps <= timesteps
         self.is_ddim_sampling = self.sampling_timesteps < timesteps
         self.ddim_sampling_eta = ddim_sampling_eta
@@ -284,7 +287,6 @@ class GaussianDiffusion(Module):
 
         # derive loss weight
         # snr - signal noise ratio
-
         snr = alphas_cumprod / (1 - alphas_cumprod)
 
         # https://arxiv.org/abs/2303.09556
@@ -301,7 +303,6 @@ class GaussianDiffusion(Module):
             register_buffer('loss_weight', maybe_clipped_snr / (snr + 1))
 
         # auto-normalization of data [0, 1] -> [-1, 1] - can turn off by setting it to be False
-
         self.normalize = normalize_to_neg_one_to_one if auto_normalize else identity
         self.unnormalize = unnormalize_to_zero_to_one if auto_normalize else identity
 
@@ -498,7 +499,6 @@ class GaussianDiffusion(Module):
         noise = default(noise, lambda: torch.randn_like(x_start))
 
         # offset noise - https://www.crosslabs.org/blog/diffusion-with-offset-noise
-
         offset_noise_strength = default(offset_noise_strength, self.offset_noise_strength)
 
         if offset_noise_strength > 0.:
@@ -506,7 +506,6 @@ class GaussianDiffusion(Module):
             noise += offset_noise_strength * rearrange(offset_noise, 'b c -> b c 1 1')
 
         # noise sample
-
         x = self.q_sample(x_start = x_start, t = t, noise = noise)
 
         # if doing self-conditioning, 50% of the time, predict x_start from current set of times
