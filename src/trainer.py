@@ -21,12 +21,14 @@ from ema_pytorch import EMA
 from accelerate import Accelerator
 from transformers import get_cosine_schedule_with_warmup
 from utils import *
+from generate import edm_sampler
 
 # trainer class
 class Trainer:
     def __init__(
             self,
-            diffusion_model,
+            model, 
+            loss_fn,
             dataset,
             *,
             train_batch_size = 16,
@@ -49,7 +51,7 @@ class Trainer:
             calculate_fid = False,
             inception_block_idx = 2048,
             max_grad_norm = 1.,
-            num_fid_samples = 50000,
+            num_fid_samples = 10_000,
             save_best_and_latest_only = False,
             num_workers = None
     ):
@@ -62,9 +64,10 @@ class Trainer:
         )
 
         # model
-        self.model = diffusion_model
-        self.channels = diffusion_model.channels
-        is_ddim_sampling = diffusion_model.is_ddim_sampling
+        self.model = model
+        self.loss_fn = loss_fn
+        self.channels = model.img_channels
+        #is_ddim_sampling = diffusion_model.is_ddim_sampling
 
         # default convert_image_to depending on channels
         if not exists(convert_image_to):
@@ -77,10 +80,11 @@ class Trainer:
 
         self.batch_size = train_batch_size
         self.gradient_accumulate_every = gradient_accumulate_every
-        assert (train_batch_size * gradient_accumulate_every) >= 16, f'your effective batch size (train_batch_size x gradient_accumulate_every) should be at least 16 or above'
+        assert (train_batch_size * gradient_accumulate_every) >= 16, \
+            f'your effective batch size should be at least 16 or above'
 
         self.train_num_steps = train_num_steps
-        self.image_size = diffusion_model.image_size
+        self.image_resolution = model.img_resolution
 
         self.max_grad_norm = max_grad_norm
 
@@ -94,7 +98,7 @@ class Trainer:
         self.dl = cycle(dl)
 
         # optimizer
-        self.opt = Adam(diffusion_model.parameters(), lr = train_lr, betas = adam_betas)
+        self.opt = Adam(model.parameters(), lr = train_lr, betas = adam_betas)
         if lr_scheduler is not None:
             num_warmup_steps = int(warmup_fraction * train_num_steps) 
             self.lr_scheduler = get_cosine_schedule_with_warmup(
@@ -107,7 +111,7 @@ class Trainer:
 
         # for logging results in a folder periodically
         if self.accelerator.is_main_process:
-            self.ema = EMA(diffusion_model, beta = ema_decay, update_every = ema_update_every)
+            self.ema = EMA(model, beta = ema_decay, update_every = ema_update_every)
             self.ema.to(self.device)
 
         self.results_folder = Path(results_folder)
@@ -118,23 +122,26 @@ class Trainer:
 
         # prepare model, dataloader, optimizer with accelerator
         self.model, self.opt = self.accelerator.prepare(self.model, self.opt)
+        self.loss_fn = self.accelerator.prepare(self.loss_fn)
 
-        # FID-score computation
+        
+        # # FID-score computation
         self.calculate_fid = calculate_fid and self.accelerator.is_main_process
 
         if self.calculate_fid:
             from fid_evaluation import FIDEvaluation
 
-            if not is_ddim_sampling:
-                self.accelerator.print(
-                    "WARNING: Robust FID computation requires a lot of generated samples and can therefore be very time consuming."\
-                    "Consider using DDIM sampling to save time."
-                )
+            # if not is_ddim_sampling:
+            #     self.accelerator.print(
+            #         "WARNING: Robust FID computation requires a lot of generated samples and can therefore be very time consuming."\
+            #         "Consider using DDIM sampling to save time."
+            #     )
 
             self.fid_scorer = FIDEvaluation(
                 batch_size=self.batch_size,
                 dl=self.dl,
-                sampler=self.ema.ema_model,
+                model=self.ema.ema_model,
+                sampling_scheme=edm_sampler,
                 channels=self.channels,
                 accelerator=self.accelerator,
                 stats_dir=results_folder,
@@ -187,6 +194,7 @@ class Trainer:
         if exists(self.accelerator.scaler) and exists(data['scaler']):
             self.accelerator.scaler.load_state_dict(data['scaler'])
 
+            
     def train(self):
         accelerator = self.accelerator
         device = accelerator.device
@@ -201,9 +209,8 @@ class Trainer:
 
                 for _ in range(self.gradient_accumulate_every):
                     data = next(self.dl).to(device)
-
                     with self.accelerator.autocast():
-                        loss = self.model(data)
+                        loss = self.loss_fn(self.model, data).mean()
                         loss = loss / self.gradient_accumulate_every
                         total_loss += loss.item()
 
@@ -234,7 +241,11 @@ class Trainer:
                             with torch.inference_mode():
                                 milestone = self.step // self.save_and_sample_every
                                 batches = num_to_groups(self.num_samples, self.batch_size)
-                                all_images_list = list(map(lambda n: self.ema.ema_model.sample(batch_size=n), batches))
+                                #all_images_list = list(map(lambda n: self.ema.ema_model.sample(batch_size=n), batches))
+                                all_images_list = []
+                                for n in batches:
+                                    latents = torch.randn(size=(n, self.channels, self.image_resolution, self.image_resolution), device=self.device)
+                                    all_images_list.append(edm_sampler(self.ema.ema_model, latents))
 
                         all_images = torch.cat(all_images_list, dim = 0)
 
