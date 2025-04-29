@@ -140,8 +140,6 @@ class Trainer:
             self.fid_scorer = FIDEvaluation(
                 batch_size=self.batch_size,
                 dl=self.dl,
-                model=self.ema.ema_model,
-                sampling_scheme=edm_sampler,
                 channels=self.channels,
                 accelerator=self.accelerator,
                 stats_dir=results_folder,
@@ -199,7 +197,8 @@ class Trainer:
         accelerator = self.accelerator
         device = accelerator.device
         losses = []
-
+        fids = []
+        
         with tqdm(initial = self.step, total = self.train_num_steps, disable = not accelerator.is_main_process) as pbar:
 
             while self.step < self.train_num_steps:
@@ -253,7 +252,9 @@ class Trainer:
 
                         # whether to calculate fid
                         if self.calculate_fid:
-                            fid_score = self.fid_scorer.fid_score()
+                            fid_score = self.fid_scorer.fid_score(model=self.ema.ema_model,
+                                                                  sampling_scheme=edm_sampler)
+                            fids.append(fid_score)
                             accelerator.print(f'fid_score: {fid_score}')
 
                         if self.save_best_and_latest_only:
@@ -267,4 +268,4 @@ class Trainer:
                 pbar.update(1)
 
         accelerator.print('training complete')
-        return losses
+        return losses, fids
