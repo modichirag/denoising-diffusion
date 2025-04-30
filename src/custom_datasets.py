@@ -2,7 +2,6 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision import datasets, transforms
 
-
 class ImagesOnly(Dataset):
         def __init__(self, base_dataset):
             self.base = base_dataset
@@ -28,6 +27,17 @@ mnist_transforms_raw = transforms.Compose([
     transforms.ToTensor(),                              # [0,255]→[0,1]
 ])
 
+mnist_inverse_transforms = transforms.Compose([
+    transforms.Normalize(                              # mean/std for CIFAR-10
+            mean=(0.),
+            std=(1/0.3081)
+    ),
+    transforms.Normalize(                              # mean/std for CIFAR-10
+            mean=(-0.1307),
+            std=(1.)
+    )
+])
+
 cifar10_transforms = transforms.Compose([
     transforms.RandomHorizontalFlip(),                  # data aug only on train
     #transforms.RandomCrop(32, padding=4),
@@ -38,8 +48,18 @@ cifar10_transforms = transforms.Compose([
     ),
 ])
 
+cifar10_inverse_transforms = transforms.Compose([
+    transforms.Normalize(                              # mean/std for CIFAR-10
+            mean=(0., 0., 0.),
+            std=(1/0.2470, 1/0.2435, 1/0.2616)
+    ),
+    transforms.Normalize(                              # mean/std for CIFAR-10
+            mean=(-0.4914, -0.4822, -0.4465),
+            std=(1., 1., 1.)
+    )
+])
+
 cifar10_transforms_raw = transforms.Compose([
-        transforms.RandomHorizontalFlip(),                  # data aug only on train
         # transforms.RandomCrop(32, padding=4),
         transforms.ToTensor(),
     ])
@@ -80,7 +100,6 @@ cifar10_test = datasets.CIFAR10(
 )
 
 
-
 # dataset classes
 class CustomDataset(Dataset):
     def __init__(
@@ -113,3 +132,10 @@ class CustomDataset(Dataset):
         path = self.paths[index]
         img = Image.open(path)
         return self.transform(img)
+
+
+dataset_dict = {
+        'cifar10':[cifar10_train, 32, 3],
+        'mnist':[mnist_train, 32, 1]
+        }
+
