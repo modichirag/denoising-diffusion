@@ -28,7 +28,8 @@ def edm_sampler(
     net, latents, class_labels=None, randn_like=torch.randn_like,
     num_steps=18, sigma_min=0.002, sigma_max=80, rho=7,
     S_churn=0, S_min=0, S_max=float('inf'), S_noise=1,
-):
+    return_intermediate=False, extrap_to_zero_time=True
+    ):
     # Adjust noise levels based on what's supported by the network.
     sigma_min = max(sigma_min, net.sigma_min)
     sigma_max = min(sigma_max, net.sigma_max)
@@ -36,10 +37,15 @@ def edm_sampler(
     # Time step discretization.
     step_indices = torch.arange(num_steps, dtype=torch.float64, device=latents.device)
     t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
-    t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
+    if extrap_to_zero_time:
+        t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
+    else:
+        t_steps = net.round_sigma(t_steps) #t_N = t_sigma_min
 
     # Main sampling loop.
     x_next = latents.to(torch.float64) * t_steps[0]
+    trajectory = [torch.unsqueeze(x_next, dim=-1)]
+
     for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])): # 0, ..., N-1
         x_cur = x_next
 
@@ -59,7 +65,12 @@ def edm_sampler(
             d_prime = (x_next - denoised) / t_next
             x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
 
-    return x_next
+        if return_intermediate:
+            trajectory.append(torch.unsqueeze(x_next, dim=-1))
+    if return_intermediate:
+        return t_steps, torch.cat(trajectory, dim=-1)
+    else:
+        return x_next
 
 #----------------------------------------------------------------------------
 # Generalized ablation sampler, representing the superset of all sampling
