@@ -24,15 +24,37 @@ from torch_utils import distributed as dist
 edm_fine = {"num_steps":256, "S_churn":80,
             "S_min":0.05, "S_max":1., "S_noise":1.0007}
 
+
+def edm_time_stepping(num_steps, sigma_min=0.002, sigma_max=80, rho=7):
+    """Compute the time stepping schedule for the EDM sampler."""
+    # Time step discretization.
+    step_indices = torch.arange(num_steps, dtype=torch.float64)
+    t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
+    t_steps = torch.cat([t_steps, torch.zeros_like(t_steps[:1])]) # t_N = 0
+    return t_steps
+
+
 def edm_sampler(
-    net, latents, class_labels=None, randn_like=torch.randn_like,
+    net, latents=None, class_labels=None, randn_like=torch.randn_like,
     num_steps=18, sigma_min=0.002, sigma_max=80, rho=7,
     S_churn=0, S_min=0, S_max=float('inf'), S_noise=1,
-    return_intermediate=False, extrap_to_zero_time=True
+    return_intermediate=False, extrap_to_zero_time=True, edm_sigma_min=0.002,  verbose=False,
+    batch_size=None, device=None
     ):
     # Adjust noise levels based on what's supported by the network.
-    sigma_min = max(sigma_min, net.sigma_min)
-    sigma_max = min(sigma_max, net.sigma_max)
+    if max(sigma_min, net.sigma_min, edm_sigma_min) != sigma_min:
+        if verbose: print(f"Resetting sigma_min to network minimum : {net.sigma_min}")
+        sigma_min = max(sigma_min, net.sigma_min, edm_sigma_min)
+    if min(sigma_max, net.sigma_max) != sigma_max:
+        if verbose: print(f"Resetting sigma_max to network maximum : {net.sigma_max}")
+        sigma_max = min(sigma_max, net.sigma_max)
+
+
+    if latents is None:
+        if (batch_size is None) or (device is None): 
+            raise TypeError("Either latents or batch_size/device must be specified")
+        nc, D = net.img_channels, net.img_resolution
+        latents = torch.randn(size=(batch_size, nc, D, D), device=device) 
 
     # Time step discretization.
     step_indices = torch.arange(num_steps, dtype=torch.float64, device=latents.device)
@@ -71,6 +93,11 @@ def edm_sampler(
         return t_steps, torch.cat(trajectory, dim=-1)
     else:
         return x_next
+
+def tweedie_sampler(net, x, sigma,  class_labels=None):
+    sigma = net.round_sigma(sigma).to(x.device) 
+    denoised = net(x, sigma, class_labels).to(torch.float64)
+    return denoised
 
 #----------------------------------------------------------------------------
 # Generalized ablation sampler, representing the superset of all sampling
