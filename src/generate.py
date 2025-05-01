@@ -34,12 +34,11 @@ def edm_time_stepping(num_steps, sigma_min=0.002, sigma_max=80, rho=7):
     return t_steps
 
 
-def edm_sampler(
-    net, latents=None, class_labels=None, randn_like=torch.randn_like,
-    num_steps=18, sigma_min=0.002, sigma_max=80, rho=7,
-    S_churn=0, S_min=0, S_max=float('inf'), S_noise=1,
-    return_intermediate=False, extrap_to_zero_time=True, edm_sigma_min=0.002,  verbose=False,
-    batch_size=None, device=None
+def edm_sampler(net, latents, class_labels=None, scale_latents=True,
+    num_steps=18, sigma_min=0.002, sigma_max=80, edm_sigma_min=0.002,
+    rho=7, S_churn=0, S_min=0, S_max=float('inf'), S_noise=1,
+    return_intermediate=False, extrap_to_zero_time=True, 
+    randn_like=torch.randn_like, verbose=False,
     ):
     # Adjust noise levels based on what's supported by the network.
     if max(sigma_min, net.sigma_min, edm_sigma_min) != sigma_min:
@@ -48,13 +47,6 @@ def edm_sampler(
     if min(sigma_max, net.sigma_max) != sigma_max:
         if verbose: print(f"Resetting sigma_max to network maximum : {net.sigma_max}")
         sigma_max = min(sigma_max, net.sigma_max)
-
-
-    if latents is None:
-        if (batch_size is None) or (device is None): 
-            raise TypeError("Either latents or batch_size/device must be specified")
-        nc, D = net.img_channels, net.img_resolution
-        latents = torch.randn(size=(batch_size, nc, D, D), device=device) 
 
     # Time step discretization.
     step_indices = torch.arange(num_steps, dtype=torch.float64, device=latents.device)
@@ -65,7 +57,11 @@ def edm_sampler(
         t_steps = net.round_sigma(t_steps) #t_N = t_sigma_min
 
     # Main sampling loop.
-    x_next = latents.to(torch.float64) * t_steps[0]
+    # If latents~N(0,1), scale by t_0; but not when starting from intermediate point.
+    if scale_latents:
+        x_next = latents.to(torch.float64) * t_steps[0]
+    else: 
+        x_next = latents.to(torch.float64)
     trajectory = [torch.unsqueeze(x_next, dim=-1)]
 
     for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])): # 0, ..., N-1
@@ -89,6 +85,7 @@ def edm_sampler(
 
         if return_intermediate:
             trajectory.append(torch.unsqueeze(x_next, dim=-1))
+
     if return_intermediate:
         return t_steps, torch.cat(trajectory, dim=-1)
     else:
@@ -98,6 +95,35 @@ def tweedie_sampler(net, x, sigma,  class_labels=None):
     sigma = net.round_sigma(sigma).to(x.device) 
     denoised = net(x, sigma, class_labels).to(torch.float64)
     return denoised
+
+
+def intermediate_edm_sampler(
+    net, x, sigma, class_labels=None, randn_like=torch.randn_like,
+    num_steps=18, sigma_min=0.002, edm_sigma_min=0.002, rho=7,
+    S_churn=0, S_min=0, S_max=float('inf'), S_noise=1,
+    return_intermediate=False, extrap_to_zero_time=True, verbose=False,
+    ):
+    return edm_sampler(net, latents=x, sigma_max=sigma, scale_latents=False, 
+        class_labels=class_labels, randn_like=randn_like,
+        num_steps=num_steps, sigma_min=sigma_min, edm_sigma_min=edm_sigma_min, 
+        rho=rho, S_churn=S_churn, S_min=S_min, S_max=S_max, S_noise=S_noise,
+        return_intermediate=return_intermediate, extrap_to_zero_time=extrap_to_zero_time,
+        verbose=verbose)
+
+
+def batched_edm_sampler(
+    net, batch_size, device, class_labels=None, randn_like=torch.randn_like,
+    num_steps=18, sigma_min=0.002, sigma_max=80, edm_sigma_min=0.002, 
+    rho=7, S_churn=0, S_min=0, S_max=float('inf'), S_noise=1,
+    return_intermediate=False, extrap_to_zero_time=True,  verbose=False,
+    ):
+    nc, D = net.img_channels, net.img_resolution
+    latents = torch.randn(size=(batch_size, nc, D, D), device=device) 
+    return edm_sampler(net, latents=latents, class_labels=class_labels, randn_like=randn_like,
+        num_steps=num_steps, sigma_min=sigma_min, sigma_max=sigma_max, edm_sigma_min=edm_sigma_min,
+        rho=rho, S_churn=S_churn, S_min=S_min, S_max=S_max, S_noise=S_noise,
+        return_intermediate=return_intermediate,extrap_to_zero_time=extrap_to_zero_time,
+        verbose=verbose)
 
 #----------------------------------------------------------------------------
 # Generalized ablation sampler, representing the superset of all sampling
