@@ -1,3 +1,9 @@
+#Log files
+logs
+results
+notebooks
+src/backup
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
