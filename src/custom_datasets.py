@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision import datasets, transforms
@@ -132,6 +133,34 @@ class CustomDataset(Dataset):
         path = self.paths[index]
         img = Image.open(path)
         return self.transform(img)
+
+
+
+class NumpyImageDataset(Dataset):
+    def __init__(self, array, channel_first=True, transform=None):
+        """
+        array: np.ndarray, shape (N, H, W, C) or (N, C, H, W)
+        transform: torchvision.transforms (expects PIL or Tensor)
+        """
+        self.array = array
+        self.transform = transform 
+        self.channel_first = channel_first
+
+    def __len__(self):
+        return len(self.array)
+
+    def __getitem__(self, idx):
+        img = self.array[idx]
+
+        if isinstance(img, np.ndarray):
+            if self.channel_first:
+                img = torch.from_numpy(img).float()
+            else: 
+                img = torch.from_numpy(img).permute(2,0,1).float()
+                
+        if self.transform:
+            img = self.transform(img)
+        return img
 
 
 dataset_dict = {
