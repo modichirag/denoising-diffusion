@@ -54,10 +54,24 @@ def normalize_to_neg_one_to_one(img):
 def unnormalize_to_zero_to_one(t):
     return (t + 1) * 0.5
 
-
 def count_parameters(model):
     # Total parameters
     total_params = sum(p.numel() for p in model.parameters())
     # Trainable parameters
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     return total_params, trainable_params
+
+def grab(var):
+    return var.detach().cpu().numpy()
+
+def infinite_dataloader(dl):
+    """Yield batches forever, but correctly bump the epoch on the DistributedSampler."""
+    # If you’re using DistributedSampler, grab it out of the dataloader
+    sampler = getattr(dl, "sampler", None)
+    epoch = 0
+    while True:
+        if sampler is not None and hasattr(sampler, "set_epoch"):
+            sampler.set_epoch(epoch)
+        for batch in dl:
+            yield batch
+        epoch += 1
