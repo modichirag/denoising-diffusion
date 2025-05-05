@@ -1,3 +1,4 @@
+import math
 import torch
 import torchvision.transforms as transforms
 
@@ -5,10 +6,10 @@ def add_gaussian_noise(eps: float) -> callable:
     """Returns a function that adds Gaussian noise to an input tensor."""
     def fwd(x, return_latent=False):
         z = torch.randn_like(x).to(x.device)
-        x1  = x + eps*z
+        x  += eps*z
         if return_latent: 
-            return x1, z
-        else: return x1
+            return x, z
+        else: return x
     return fwd
 
 
@@ -40,26 +41,15 @@ def random_mask_image(mask_ratio: float) -> callable:
         else:
             raise ValueError(f"Expected 3D or 4D tensor, got {image.dim()}D")
 
-        masked_image = image * mask
+        image *= mask
         
         if return_latents: 
-            return masked_image, mask
+            return image, mask
         else:
-            return masked_image
+            return image
 
     return fwd
 
-
-
-def add_gaussian_noise(eps: float) -> callable:
-    """Returns a function that adds Gaussian noise to an input tensor."""
-    def fwd(x, return_latent=False):
-        z = torch.randn_like(x).to(x.device)
-        x1  = x + eps*z
-        if return_latent: 
-            return x1, z
-        else: return x1
-    return fwd
 
 
 def noise_and_mask_image(eps: float, mask_ratio: float) -> callable:
@@ -100,12 +90,14 @@ def noise_and_mask_image(eps: float, mask_ratio: float) -> callable:
     return fwd
 
 
-def gaussian_blur(sigma: float = 1.0) -> callable:
+def gaussian_blur(sigma: float, epsilon: float) -> callable:
     """Returns a function that applies Gaussian blur to an input tensor."""        
-    kernel_size = 5.
+    kernel_size = int(2 * math.ceil(3*sigma) + 1)
     gaussian_blur = transforms.GaussianBlur(kernel_size=kernel_size, sigma=sigma)
     def fwd(x):
-        x_blur = gaussian_blur(x)
+        x = gaussian_blur(x)
+        z = torch.randn_like(x).to(x.device)
+        x += epsilon*z
         return x
 
     return fwd
