@@ -4,9 +4,13 @@ from utils import grab
 
 class VelocityField(torch.nn.Module):
 
-    def __init__(self, model):
+    def __init__(self, model, use_compile=False):
         super().__init__()
         self.model = model
+        self.use_compile = use_compile
+
+        if self.use_compile:
+            self.forward = torch.compile(self.forward)
         
     def forward(self, x, t):
         return self.model(x, t, class_labels=None)
@@ -36,10 +40,10 @@ class DeconvolvingInterpolant(torch.nn.Module):
         
         traj = [x]
         with torch.no_grad():
-            Xt_prev = x
+            Xt_prev = x*1.
             for i in range(1, self.n_steps+1):
                 ti = (torch.ones(x.shape[0]) - (i-1) *self.delta_t).to(x.device)
-                Xt_prev = Xt_prev - b(Xt_prev, ti) * self.delta_t
+                Xt_prev -= b(Xt_prev, ti) * self.delta_t
                 if return_trajectory:
                     traj.append(Xt_prev)
             Xt_final = Xt_prev
@@ -49,41 +53,6 @@ class DeconvolvingInterpolant(torch.nn.Module):
         else:
             return Xt_final
 
-# class DenoisingInterpolant(torch.nn.Module):
-
-#     def __init__(self, eps, n_steps=80):
-#         super().__init__()
-#         self.eps = eps
-#         self.n_steps = n_steps
-#         self.delta_t = 1 / self.n_steps
-
-#     def loss_fn(self, b, x, t):
-
-#         x0 = self.transport(b, x)
-#         z = torch.randn_like(x0)
-#         It   = x0 + self.eps*t.reshape(-1, 1, 1, 1)*z
-#         bt   = b(It, t)
-#         b_true = self.eps * z
-#         loss = torch.mean((bt - b_true)**2)
-#         return loss
-
-#     def transport(self, b, x, return_trajectory=False):
-        
-#         traj = [x]
-#         with torch.no_grad():
-#             Xt_prev = x
-#             for i in range(1, self.n_steps+1):
-#                 ti = (torch.ones(x.shape[0]) - (i-1) *self.delta_t).to(x.device)
-#                 Xt_prev = Xt_prev - b(Xt_prev, ti) * self.delta_t
-#                 if return_trajectory:
-#                     traj.append(Xt_prev)
-#             Xt_final = Xt_prev
-
-#         if return_trajectory:
-#             return traj
-#         else:
-#             return Xt_final
-    
 
 def save_fig(idx, image, corrupted, clean, results_folder, epsilon=""):
     to_show = [image, corrupted, clean]
