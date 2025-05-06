@@ -4,10 +4,10 @@ import torchvision.transforms as transforms
 
 def add_gaussian_noise(epsilon: float) -> callable:
     """Returns a function that adds Gaussian noise to an input tensor."""
-    def fwd(x, return_latent=False):
+    def fwd(x, return_latents=False):
         z = torch.randn_like(x).to(x.device)
         x_n = x + epsilon * z
-        if return_latent: 
+        if return_latents: 
             return x_n, z
         else: return x_n
     return fwd
@@ -97,11 +97,14 @@ def gaussian_blur(sigma: float, epsilon: float) -> callable:
     kernel_size = int(2 * math.ceil(3*sigma) + 1)
     gaussian_blur = transforms.GaussianBlur(kernel_size=kernel_size, sigma=sigma)
 
-    def fwd(x):
+    def fwd(x, return_latents=False):
         x_b = gaussian_blur(x)
         z = torch.randn_like(x_b).to(x.device)
         x_b += epsilon * z
-        return x_b
+        if return_latents:
+            return x_b, z
+        else:
+            return x_b
 
     return fwd
 
@@ -126,7 +129,7 @@ def random_block_mask(block_size, epsilon):
     else:
         bh, bw = int(block_size[0]), int(block_size[1])
 
-    def fwd(image):
+    def fwd(image, return_latents=False):
         # handle single image vs batch
         if image.ndim == 3:
             img = image.unsqueeze(0)
@@ -152,11 +155,13 @@ def random_block_mask(block_size, epsilon):
         img *= mask
         z = torch.randn_like(img).to(device)
         img += z * epsilon
-        
         if squeeze_after:
             img = img.squeeze(0)
-            
-        return img
+        
+        if return_latents:
+            return img, mask
+        else:
+            return img
     
     return fwd
 
