@@ -105,9 +105,65 @@ def gaussian_blur(sigma: float, epsilon: float) -> callable:
 
     return fwd
 
+
+def random_block_mask(block_size, epsilon):
+    """
+    Randomly masks out `num_blocks` rectangular regions of size `block_size` in `image`.
+
+    Args:
+        image: Tensor of shape (C, H, W) or (N, C, H, W).
+        block_size: int or (bh, bw). Size of each block to mask.
+        num_blocks: how many blocks to place in each image.
+        fill_value: value to assign inside each masked block (default 0.0).
+
+    Returns:
+        masked: Tensor same shape as `image`, with blocks set to `fill_value`.
+        mask:   FloatTensor same shape, with 1.0 where kept, 0.0 where masked.
+    """
+    # normalize block_size to a tuple
+    if isinstance(block_size, float):
+        bh = bw = int(block_size)
+    else:
+        bh, bw = int(block_size[0]), int(block_size[1])
+
+    def fwd(image):
+        # handle single image vs batch
+        if image.ndim == 3:
+            img = image.unsqueeze(0)
+            squeeze_after = True
+        elif image.ndim == 4:
+            img = image*1.
+            squeeze_after = False
+        else:
+            raise ValueError(f"Expected 3D or 4D tensor, got {image.ndim}D")
+
+        N, C, H, W = img.shape
+        device = img.device
+
+        # start with a mask of ones
+        mask = torch.ones((N, 1, H, W), dtype=torch.float32, device=device)
+
+        for n in range(N):
+            top  = torch.randint(0, H - bh + 1, (1,)).item()
+            left = torch.randint(0, W - bw + 1, (1,)).item()
+            mask[n, :, top:top+bh, left:left+bw] = 0.0
+
+        # apply
+        img *= mask
+        z = torch.randn_like(img).to(device)
+        img += z * epsilon
+        
+        if squeeze_after:
+            img = img.squeeze(0)
+            
+        return img
+    
+    return fwd
+
 corruption_dict = {
     'gaussian_noise': add_gaussian_noise,
     'random_mask': random_mask_image,
     'noise_and_mask': random_mask_image, 
-    'gaussian_blur': gaussian_blur
+    'gaussian_blur': gaussian_blur,
+    'block_mask': random_block_mask,
 }
