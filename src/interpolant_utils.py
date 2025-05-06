@@ -12,38 +12,49 @@ class VelocityField(torch.nn.Module):
         if self.use_compile:
             self.forward = torch.compile(self.forward)
         
-    def forward(self, x, t):
-        return self.model(x, t, class_labels=None)
+    def forward(self, x, t, latents=None):
+        return self.model(x, t, latents=latents)
     
 
 class DeconvolvingInterpolant(torch.nn.Module):
 
-    def __init__(self, push_fwd, n_steps=80):
+    def __init__(self, push_fwd, use_latents=False, n_steps=80):
         super().__init__()
         self.push_fwd = push_fwd
         self.n_steps = n_steps
         self.delta_t = 1 / self.n_steps
+        self.use_latents = use_latents
+        if use_latents:
+            print("Using latents for deonvolving")
 
-    def loss_fn(self, b, x):
-
-        x0 = self.transport(b, x)
-        x1 = self.push_fwd(x0)
+    def loss_fn(self, b, x, latent=None):
+        
+        x0 = self.transport(b, x, latent=latent)
+        if self.use_latents:
+            assert latent is not None
+            x1, latent1 = self.push_fwd(x0, return_latents=True)
+        else:
+            x1 = self.push_fwd(x0, return_latents=False)
+            latent1 = None
         t = torch.rand(x.shape[0]).to(x.device)
         t = t.reshape(-1, 1, 1, 1)
         It = (1-t)*x0 + t*x1
         b_true = x1 - x0
-        bt   = b(It, torch.squeeze(t))
+        bt   = b(It, torch.squeeze(t), latent1)
         loss = torch.mean((bt - b_true)**2)
         return loss
 
-    def transport(self, b, x, return_trajectory=False):
+    def transport(self, b, x, latent=None, return_trajectory=False):
         
         traj = [x]
         with torch.no_grad():
             Xt_prev = x*1.
             for i in range(1, self.n_steps+1):
                 ti = (torch.ones(x.shape[0]) - (i-1) *self.delta_t).to(x.device)
-                Xt_prev -= b(Xt_prev, ti) * self.delta_t
+                try:
+                    Xt_prev -= b(Xt_prev, ti, latent) * self.delta_t
+                except:
+                    Xt_prev -= b(Xt_prev, ti) * self.delta_t
                 if return_trajectory:
                     traj.append(Xt_prev)
             Xt_final = Xt_prev
