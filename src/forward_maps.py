@@ -177,6 +177,7 @@ def motion_blur(kernel_size, angle, epsilon):
     # normalize block_size to a tuple
     # 1) Create horizontal kernel on CPU
     kernel_size = int(kernel_size)
+    assert kernel_size % 2 == 1, "kernel_size must be odd"
     k = torch.zeros(kernel_size, kernel_size)
     k[kernel_size // 2, :] = 1.0
     # rotate via grid_sample
@@ -211,6 +212,66 @@ def motion_blur(kernel_size, angle, epsilon):
             return out   
     return fwd
 
+def random_motion(kernel_size, epsilon):
+    """
+    img: Tensor[C,H,W] or [N,C,H,W], float or double
+    kernel_size: odd int
+    """
+    # normalize block_size to a tuple
+    # 1) Create horizontal kernel on CPU
+    kernel_size = int(kernel_size)
+    assert kernel_size % 2 == 1, "kernel_size must be odd"
+    k = torch.zeros(kernel_size, kernel_size)
+    k[kernel_size // 2, :] = 1.0
+    k = k.unsqueeze(0).unsqueeze(0)  # 1×1×k×k
+    pad = kernel_size // 2
+
+    def fwd(img, return_latents=False):
+        # Ensure img is batched
+        was_3d = (img.dim() == 3)
+        if was_3d:
+            img = img.unsqueeze(0)  # Add batch dimension
+        batch_size = img.size(0)
+        N, C, H, W = img.shape
+
+        # sample angle and rotate via grid_sample
+        angles = (torch.rand(batch_size) - 0.5) * 360.
+        angles = torch.deg2rad(angles).to(img.device)  # Convert to radians
+        thetas = []
+        for angle in angles:
+            theta = torch.tensor([
+                [torch.cos(angle), -torch.sin(angle), 0],
+                [torch.sin(angle),  torch.cos(angle), 0]
+            ])
+            thetas.append(theta)
+        thetas = torch.stack(thetas).to(img.device)  # Shape: [batch_size, 2, 3]
+ 
+        # 3) Rotate kernels in batch via grid_sample
+        #    Expand k to (N,1,Kh,Kw) for grid_sample
+        k_batch = k.expand(batch_size, 1, kernel_size, kernel_size).to(img.device)
+        grid = F.affine_grid(thetas, k_batch.size(), align_corners=False)
+        ka = F.grid_sample(k_batch, grid, align_corners=False)
+        # Normalize each kernel
+        ka = ka / ka.flatten(1).sum(dim=1).view(N, 1, 1, 1)
+
+        # 4) Depthwise conv with per-sample kernels using grouped conv
+        #    Reshape input to (1, N*C, H, W) and kernels to (N*C, 1, Kh, Kw)
+        img_reshaped = img.reshape(1, N * C, H, W)
+        # Repeat each rotated kernel C times for each channel
+        weight = ka.repeat_interleave(C, dim=0)  # (N*C,1,Kh,Kw)
+        # Convolve with groups=N*C and reshape back to (N,C,H,W)
+        out = F.conv2d(img_reshaped, weight=weight, padding=pad, groups=N*C)
+        out = out.view(N, C, H, W)     
+
+        z = torch.randn_like(img).to(img.device)
+        out += z * epsilon
+
+        if return_latents:
+            return out, (angles / torch.pi).unsqueeze(1)
+        else:
+            return out   
+    return fwd
+
 
 corruption_dict = {
     'gaussian_noise': add_gaussian_noise,
@@ -219,4 +280,18 @@ corruption_dict = {
     'gaussian_blur': gaussian_blur,
     'block_mask': random_block_mask,
     'motion_blur': motion_blur,
+    'random_motion': random_motion,
 }
+
+def parse_latents(corruption, D):
+    """Parse the corruption function and return the latent dimensions."""
+    if 'mask' in corruption:
+        use_latents = True
+        latent_dim = [1, D, D]
+    elif corruption == 'motion_blur':
+        use_latents = True
+        latent_dim = [1]
+    else:
+        use_latents = False
+        latent_dim = None
+    return use_latents, latent_dim
