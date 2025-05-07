@@ -526,17 +526,27 @@ class ConditionalDhariwalUNet(torch.nn.Module): #Difference in handling label_di
         self.map_augment = Linear(in_features=augment_dim, out_features=model_channels, bias=False, **init_zero) if augment_dim else None
         self.map_layer0 = Linear(in_features=model_channels, out_features=emb_channels, **init)
         self.map_layer1 = Linear(in_features=emb_channels, out_features=emb_channels, **init)
+        self.latent_dim = latent_dim if latent_dim is not None else []
         if latent_dim is None:
             self.map_latents = None
             latent_in_channels = 0
-        elif type(latent_dim) == int or type(latent_dim) == float:
-            self.map_latents = Linear(in_features=latent_dim, out_features=emb_channels, bias=False, init_mode='kaiming_normal', init_weight=np.sqrt(latent_dim))
+        elif len(latent_dim) == 1:
+            latent_dim = int(latent_dim[0])
+            self.map_latents = torch.nn.Sequential(
+                Linear(in_features=latent_dim, out_features=emb_channels, bias=False, init_mode='kaiming_normal', init_weight=np.sqrt(latent_dim)),
+                torch.nn.SiLU(),
+                Linear(in_features=emb_channels, out_features=emb_channels, bias=False, init_mode='kaiming_normal', init_weight=np.sqrt(latent_dim)),
+                torch.nn.SiLU(),
+                Linear(in_features=emb_channels, out_features=emb_channels, bias=False, init_mode='kaiming_normal', init_weight=np.sqrt(latent_dim))
+            )
             latent_in_channels = 0
-        elif type(latent_dim) == list:
-            assert len(latent_dim) == 3
-            C, H, W = latent_dim
+        elif len(latent_dim) in [2, 3]:
+            if len(latent_dim) == 3:
+                C, H, W = latent_dim
+            if len(latent_dim) == 2:
+                H, W = latent_dim
+                C = 1
             latent_in_channels = C
-            # self.map_label = UNetBlock(in_channels=C, out_channels=C, emb_channels=emb_channels, attention=False, dropout=0, init=init, init_zero=init_zero, gated=gated)
             self.map_latents = torch.nn.Sequential(
                 Conv2d(in_channels=C, out_channels=latent_channels, kernel=3, gated=gated, **init),
                 UNetBlock(in_channels=latent_channels, out_channels=latent_channels, emb_channels=latent_channels, \
@@ -587,13 +597,13 @@ class ConditionalDhariwalUNet(torch.nn.Module): #Difference in handling label_di
             emb = emb + self.map_augment(augment_labels)
         emb = silu(self.map_layer0(emb))
         emb = self.map_layer1(emb)
+        if len(self.latent_dim) == 1:
+            emb = emb + self.map_latents(latents)
         emb = silu(emb)
-
-        # if self.map_latents is not None:
-        if latents is not None:
+            
+        if len(self.latent_dim) in [2, 3]:
             latents = self.map_latents(latents)
             x = torch.cat([x, latents], dim=1) 
-            
         # Encoder.
         skips = []
         for block in self.enc.values():
