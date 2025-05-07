@@ -62,19 +62,11 @@ if args.suffix != "": folder = f"{folder}-{args.suffix}"
 results_folder = f"{BASEPATH}/{folder}/"
 os.makedirs(results_folder, exist_ok=True)
 print(f"Results will be saved in folder: {results_folder}")
-if 'mask' in corruption:
-    use_latents = True
-    print("Will be using latents: ", use_latents)
-    latent_dim = [1, D, D]
-else:
-    use_latents = False
-    latent_dim = None
+use_latents, latent_dim = fwd_maps.parse_latents(corruption, D)
 
 # Initialize model and train
 b =  ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim,
                         model_channels=model_channels, gated=gated).to(device)
-# model =  DhariwalUNet(D, nc, nc, model_channels=model_channels, gated=gated).to(device)
-# b = VelocityField(model, use_compile=True)
 print("Parameter count : ", count_parameters(b))
 dl = infinite_dataloader(DataLoader(image_dataset, batch_size = batch_size, shuffle = True, pin_memory = True, num_workers = 1))
 deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, n_steps=80).to(device)
@@ -89,8 +81,6 @@ trainer = Trainer(model=b,
         train_num_steps = train_num_steps,
         save_and_sample_every= save_and_sample_every,
         results_folder=results_folder, 
-        # amp = False,
-        # mixed_precision_type = 'bf16',
         )
 
 trainer.train()
