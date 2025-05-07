@@ -28,7 +28,7 @@ class DeconvolvingInterpolant(torch.nn.Module):
             print("Using latents for deonvolving")
 
     def loss_fn(self, b, x, latent=None):
-        
+
         x0 = self.transport(b, x, latent=latent)
         if self.use_latents:
             assert latent is not None
@@ -51,10 +51,7 @@ class DeconvolvingInterpolant(torch.nn.Module):
             Xt_prev = x*1.
             for i in range(1, self.n_steps+1):
                 ti = (torch.ones(x.shape[0]) - (i-1) *self.delta_t).to(x.device)
-                try:
-                    Xt_prev -= b(Xt_prev, ti, latent) * self.delta_t
-                except:
-                    Xt_prev -= b(Xt_prev, ti) * self.delta_t
+                Xt_prev -= b(Xt_prev, ti, latent) * self.delta_t
                 if return_trajectory:
                     traj.append(Xt_prev)
             Xt_final = Xt_prev
