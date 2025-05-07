@@ -6,29 +6,34 @@ from torch.utils.data import DataLoader, Dataset
 import numpy as np
 
 sys.path.append('./src/')
-from utils import grab, cycle
+from utils import grab, cycle, count_parameters, infinite_dataloader
 from custom_datasets import dataset_dict, ImagesOnly
-from networks import DhariwalUNet
+from networks import DhariwalUNet, ConditionalDhariwalUNet
 from interpolant_utils import VelocityField, DeconvolvingInterpolant, save_fig
 import forward_maps as fwd_maps
 from trainer_si import Trainer
 import argparse
 
 BASEPATH = '/mnt/ceph/users/cmodi/diffusion_guidance/'
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+print("DEVICE : ", device)
 
 parser = argparse.ArgumentParser(description="")
 parser.add_argument("--dataset", type=str, help="dataset")
-parser.add_argument("--corruption", type=str, default='gaussian_noise', help="corruption")
-parser.add_argument("--corruption_level", type=float, default=0.1, help="corruption level")
+parser.add_argument("--corruption", type=str, help="corruption")
+parser.add_argument("--corruption_levels", type=float, nargs='+', help="corruption level")
 parser.add_argument("--channels", type=int, default=32, help="number of channels in model")
 parser.add_argument("--train_steps", type=int, default=101, help="number of channels in model")
 parser.add_argument("--batch_size", type=int, default=32, help="batch size")
 parser.add_argument("--learning_rate", type=float, default=1e-3, help="learning rate")
 parser.add_argument("--prefix", type=str, default='', help="prefix for folder name")
 parser.add_argument("--suffix", type=str, default='', help="suffix for folder name")
+parser.add_argument("--gated", action='store_true', help="gated convolution if provided, else not")
+parser.add_argument("--lr_scheduler", action='store_true', help="use scheduler if provided, else not")
 
 # Parse arguments
 args = parser.parse_args()
+
 print(args)
 dataset, D, nc = dataset_dict[args.dataset]
 image_dataset = ImagesOnly(dataset)
@@ -37,32 +42,42 @@ train_num_steps = args.train_steps
 save_and_sample_every = int(train_num_steps//50)
 batch_size = args.batch_size
 lr = args.learning_rate 
-lr_scheduler = True
-
+gated = args.gated
+if gated: 
+    args.suffix = f"{args.suffix}-gated" if args.suffix else "gated"
+lr_scheduler = args.lr_scheduler
 
 # Parse corruption arguments
 corruption = args.corruption
-corruption_level = args.corruption_level
+corruption_levels = args.corruption_levels
 try:
-    fwd_func = fwd_maps.corruption_dict[corruption](corruption_level)
+    fwd_func = fwd_maps.corruption_dict[corruption](*corruption_levels)
 except Exception as e:
-    print(e)
+    print("Exception in loading corruption function : ", e)
     sys.exit()
-folder = f"{args.dataset}-{corruption}-{corruption_level}"
+cname = "-".join([f"{i:0.2f}" for i in corruption_levels])
+folder = f"{args.dataset}-{corruption}-{cname}"
 if args.prefix != "": folder = f"{args.prefix}-{folder}"
 if args.suffix != "": folder = f"{folder}-{args.suffix}"
 results_folder = f"{BASEPATH}/{folder}/"
 os.makedirs(results_folder, exist_ok=True)
 print(f"Results will be saved in folder: {results_folder}")
+if 'mask' in corruption:
+    use_latents = True
+    print("Will be using latents: ", use_latents)
+    latent_dim = [1, D, D]
+else:
+    use_latents = False
+    latent_dim = None
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-print("DEVICE : ", device)
-
-
-model =  DhariwalUNet(D, nc, nc, model_channels=model_channels).to(device)
-b = VelocityField(model)
-dl = cycle(DataLoader(image_dataset, batch_size = batch_size, shuffle = True, pin_memory = True, num_workers = 1))
-deconvolver = DeconvolvingInterpolant(fwd_func, n_steps=80).to(device)
+# Initialize model and train
+b =  ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim,
+                        model_channels=model_channels, gated=gated).to(device)
+# model =  DhariwalUNet(D, nc, nc, model_channels=model_channels, gated=gated).to(device)
+# b = VelocityField(model, use_compile=True)
+print("Parameter count : ", count_parameters(b))
+dl = infinite_dataloader(DataLoader(image_dataset, batch_size = batch_size, shuffle = True, pin_memory = True, num_workers = 1))
+deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, n_steps=80).to(device)
 
 trainer = Trainer(model=b, 
         deconvolver=deconvolver, 
@@ -74,8 +89,8 @@ trainer = Trainer(model=b,
         train_num_steps = train_num_steps,
         save_and_sample_every= save_and_sample_every,
         results_folder=results_folder, 
-        amp = False,
-        mixed_precision_type = 'bf16',
+        # amp = False,
+        # mixed_precision_type = 'bf16',
         )
 
 trainer.train()

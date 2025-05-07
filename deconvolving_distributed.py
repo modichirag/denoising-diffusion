@@ -12,7 +12,7 @@ from custom_datasets import dataset_dict, ImagesOnly
 from networks import ConditionalDhariwalUNet
 from interpolant_utils import DeconvolvingInterpolant
 import forward_maps as fwd_maps
-from trainer_si2 import Trainer, get_worker_info
+from trainer_si import Trainer, get_worker_info
 import argparse
 
 BASEPATH = '/mnt/ceph/users/cmodi/diffusion_guidance/'
@@ -28,7 +28,7 @@ parser.add_argument("--learning_rate", type=float, default=1e-3, help="learning 
 parser.add_argument("--prefix", type=str, default='', help="prefix for folder name")
 parser.add_argument("--suffix", type=str, default='', help="suffix for folder name")
 parser.add_argument("--gated", action='store_true', help="gated convolution if provided, else not")
-parser.add_argument("--scheduler", action='store_true', help="use scheduler if provided, else not")
+parser.add_argument("--lr_scheduler", action='store_true', help="use scheduler if provided, else not")
 
 # Initialize DDP
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -48,7 +48,7 @@ save_and_sample_every = int(train_num_steps//50)
 batch_size = args.batch_size
 lr = args.learning_rate 
 gated = args.gated
-lr_scheduler = args.scheduler
+lr_scheduler = args.lr_scheduler
 # Dataset arguments
 dataset, D, nc = dataset_dict[args.dataset]
 image_dataset = ImagesOnly(dataset)
@@ -71,11 +71,17 @@ if args.suffix != "": folder = f"{folder}-{args.suffix}"
 results_folder = f"{BASEPATH}/{folder}/"
 os.makedirs(results_folder, exist_ok=True)
 print(f"Results will be saved in folder: {results_folder}")
-use_latents = True if 'mask' in corruption else False
-print("Will be using latents: ", use_latents)
+if 'mask' in corruption:
+    use_latents = True
+    print("Will be using latents: ", use_latents)
+    latent_dim = [1, D, D]
+else:
+    use_latents = False
+    latent_dim = None
 
 # Initialize model and train
-b =  ConditionalDhariwalUNet(D, nc, nc, model_channels=model_channels, gated=gated).to(device)
+b =  ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim,
+                        model_channels=model_channels, gated=gated).to(device)
 # b = VelocityField(model, use_compile=True)
 b = DDP(b, device_ids=[local_rank])  # Wrap model with DDP
 print("Parameter count : ", count_parameters(b))
