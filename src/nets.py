@@ -1,5 +1,6 @@
 import torch
 from torch import nn, einsum
+from torch.func import vmap
 import torch.nn.functional as F
 from torch.nn import Module, ModuleList
 
@@ -23,7 +24,7 @@ def Downsample(dim, dim_out = None):
         Rearrange('b c (h p1) (w p2) -> b (c p1 p2) h w', p1 = 2, p2 = 2),
         nn.Conv2d(dim * 4, default(dim_out, dim), 1)
     )
-   
+
 
 def l2norm(t):
     return F.normalize(t, dim = -1)
@@ -227,3 +228,27 @@ class FeedForward(nn.Module):
 
         return self.proj_out(x)
 
+class SimpleFeedForward(nn.Module):
+    def __init__(
+        self, d,  hidden_sizes = [256, 256], activation=torch.nn.ReLU
+    ):
+        super().__init__()
+        layers = []
+        prev_dim = d + 1  #
+        for hidden_size in hidden_sizes:
+            layers.append(torch.nn.Linear(prev_dim, hidden_size))
+            layers.append(activation())
+            prev_dim = hidden_size
+
+        # final layer
+        layers.append(torch.nn.Linear(prev_dim, d))
+
+        # Wrap all layers in a Sequential module
+        self.net = torch.nn.Sequential(*layers)
+
+    def _single_forward(self, x, t):
+        t = t.unsqueeze(-1)
+        return self.net(torch.cat((x, t)))
+
+    def forward(self, x, t, latents=None):
+        return vmap(self._single_forward, in_dims=(0,0), out_dims=(0))(x,t)
