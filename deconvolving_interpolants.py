@@ -63,6 +63,8 @@ results_folder = f"{BASEPATH}/{folder}/"
 os.makedirs(results_folder, exist_ok=True)
 print(f"Results will be saved in folder: {results_folder}")
 use_latents, latent_dim = fwd_maps.parse_latents(corruption, D)
+if use_latents:
+    print("Will use latents of dimension: ", latent_dim)
 
 # Initialize model and train
 b =  ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim,
