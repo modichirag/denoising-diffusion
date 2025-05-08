@@ -148,14 +148,13 @@ class Trainer:
 
                 total_loss = 0.
                 for _ in range(self.gradient_accumulate_every):
-                    data = next(self.dl).to(device)
-                    if self.deconvolver.use_latents:
-                        data, latents = self.deconvolver.push_fwd(data, return_latents=True)
-                    else:
-                        data = self.deconvolver.push_fwd(data,  return_latents=False)
-                        latents = None
+                    image, corrupted, latents = next(self.dl)
+                    image = image.to(self.device)
+                    corrupted = corrupted.to(self.device)
+                    latents = latents.to(self.device)
+                    latents = latents if self.deconvolver.use_latents else None
                     with torch.autocast(device_type=device, dtype=typedict[self.mixed_precision_type]):
-                        loss = self.deconvolver.loss_fn(self.model, data, latents).mean()
+                        loss = self.deconvolver.loss_fn(self.model, corrupted, latents).mean()
                         loss = loss / self.gradient_accumulate_every
                         total_loss += loss.item()
 
@@ -188,12 +187,11 @@ class Trainer:
                             with torch.inference_mode():
                                 milestone = self.step // self.save_and_sample_every
                                 np.save(f"{self.results_folder}/losses", losses)
-                                image = next(self.dl).to(device)
-                                if self.deconvolver.use_latents:
-                                    corrupted, latents = self.deconvolver.push_fwd(image, return_latents=True)
-                                else:
-                                    corrupted = self.deconvolver.push_fwd(image,  return_latents=False)
-                                    latents = None
+                                image, corrupted, latents = next(self.dl)
+                                image = image.to(self.device)
+                                corrupted = corrupted.to(self.device)
+                                latents = latents.to(self.device)
+                                latents = latents if self.deconvolver.use_latents else None
                                 clean = self.deconvolver.transport(self.ema.ema_model, corrupted, latents)
                                 iutils.save_fig(milestone, image, corrupted, clean, self.results_folder)
                                 print(f"Saved model at step {self.step}")
@@ -209,9 +207,11 @@ class Trainer:
                 with torch.inference_mode():
                     milestone = self.step // self.save_and_sample_every
                     np.save(f"{self.results_folder}/losses", losses)
-                    image = next(self.dl).to(device)
-                    corrupted = self.deconvolver.push_fwd(image)
-                    clean = self.deconvolver.transport(self.ema.ema_model, corrupted)
+                    image, corrupted, latents = next(self.dl)
+                    image = image.to(self.device)
+                    corrupted = corrupted.to(self.device)
+                    latents = latents.to(self.device)
+                    clean = self.deconvolver.transport(self.ema.ema_model, corrupted, latents)
                     iutils.save_fig("fin", image, corrupted, clean, self.results_folder)
                     if self.master_process:
                         print(f"Saved model at step {self.step}")

@@ -169,7 +169,7 @@ class NumpyImageDataset(Dataset):
 
 
 class CorruptedDataset(Dataset):
-    def __init__(self, base_dataset, corruption_fn, base_seed: int = 0):
+    def __init__(self, base_dataset, corruption_fn, tied_rng=True, base_seed: int = 0):
         """
         base_dataset   : any Dataset returning (img, label)
         corruption_fn  : fn(img, *, generator) -> img_corrupted
@@ -178,6 +178,7 @@ class CorruptedDataset(Dataset):
         self.base = base_dataset
         self.corrupt = corruption_fn
         self.base_seed = base_seed
+        self.tied_rng = tied_rng
 
     def __len__(self):
         return len(self.base)
@@ -185,9 +186,12 @@ class CorruptedDataset(Dataset):
     def __getitem__(self, idx):
         img = self.base[idx]
         # make a fresh generator, seed it with (base_seed + idx)
-        gen = torch.Generator()
-        gen.manual_seed(self.base_seed + idx)
+        if self.tied_rng:
+            gen = torch.Generator()
+            gen.manual_seed(self.base_seed + idx)
+        else:
+            gen = None
         # apply your corruption; it must accept a `generator` kwarg
         img_corrupted, latents = self.corrupt(img, return_latents=True, generator=gen)
-        return img_corrupted, latents
+        return img, img_corrupted, latents
 
