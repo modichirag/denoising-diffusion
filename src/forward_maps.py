@@ -272,6 +272,88 @@ def random_motion(kernel_size, epsilon):
             return out   
     return fwd
 
+def random_motion2(kernel_size, epsilon):
+    """
+    img: Tensor[C,H,W] or [N,C,H,W], float or double
+    kernel_size: odd int
+    """
+    # normalize block_size to a tuple
+    # 1) Create horizontal kernel on CPU
+    kernel_size = int(kernel_size)
+    assert kernel_size % 2 == 1, "kernel_size must be odd"
+    kernel = torch.zeros(kernel_size, kernel_size)
+    kernel[kernel_size // 2, :] = 1.0
+    kernel = kernel.unsqueeze(0).unsqueeze(0)  # 1×1×k×k
+    pad = kernel_size // 2
+
+    def direction_map_projection(cos, sin, H: int, W: int):
+        """
+        Returns a single-channel map (H,W) where each pixel's
+        value = (x, y)·(cos(theta), sin(theta)), with x,y in [-1,+1].
+        """
+        # vx, vy = cos, sin    
+        # build normalized coordinate grids from -1 to +1
+        xs = torch.linspace(-1.0, 1.0, W, device=cos.device).view(1, W).expand(H, W)
+        ys = torch.linspace(-1.0, 1.0, H, device=sin.device).view(H, 1).expand(H, W)
+        # project each (x,y) onto the direction vector (vx, vy)
+        proj = cos * xs + sin * ys   # shape (H, W)
+        return proj
+
+    
+    def fwd_single(img, cos, sin):
+
+        was_3d = (img.dim() == 3)
+        if was_3d:
+            img = img.unsqueeze(0)
+
+        # angle = torch.deg2rad(angle).to(img.device)  # Convert to radians
+        k = kernel.to(img.device)
+        # cos = torch.cos(angle)                    # (N,)
+        # sin = torch.sin(angle)                    # (N,)
+        zeros = torch.zeros_like(cos)           # (N,)
+        
+        # 3) pack into the batch of 2×3 matrices
+        row1 = torch.stack([ cos, -sin, zeros ], dim=0)  # (N, 3)
+        row2 = torch.stack([ sin,  cos, zeros ], dim=0)  # (N, 3)
+        theta = torch.stack([row1, row2], dim=0).unsqueeze(0)         # (N, 2, 3)
+
+        # need N=1,C=1,H=k,W=k
+        grid = F.affine_grid(theta, k.size(), align_corners=False)
+        k = F.grid_sample(k, grid, align_corners=False)
+        k = k / k.sum()
+            
+        # pad so output same size
+        pad = kernel_size // 2
+        out = F.conv2d(img, weight=k.expand(img.size(1), -1, -1, -1).to(img.device),
+                    padding=pad, groups=img.size(1))
+        out = out.squeeze(0) if was_3d else out
+
+        return out
+
+    def fwd(img, angles=None, return_latents=False):
+        was_3d = (img.dim() == 3)
+        if was_3d:
+            img = img.unsqueeze(0)  # Add batch dimension
+        batch_size = img.size(0)
+        N, C, H, W = img.shape
+
+        # sample angle and rotate via grid_sample
+        if angles is  None:
+            angles = (torch.rand(batch_size) - 0.5) * 360.  
+        angles = angles.to(img.device)
+        rads = torch.deg2rad(angles)
+        cos, sin = torch.cos(rads), torch.sin(rads)
+        out = torch.vmap(fwd_single, in_dims=(0, 0, 0), out_dims=(0))(img, cos, sin)
+        z = torch.randn_like(img).to(img.device)
+        out += z*epsilon
+        if return_latents:
+            latent = torch.vmap(direction_map_projection, in_dims=(0, 0, None, None), out_dims=(0))  (cos, sin, H, W)
+            return out, latent.unsqueeze(1)
+        else:
+            return out
+    return fwd
+
+
 
 corruption_dict = {
     'gaussian_noise': add_gaussian_noise,
@@ -281,6 +363,7 @@ corruption_dict = {
     'block_mask': random_block_mask,
     'motion_blur': motion_blur,
     'random_motion': random_motion,
+    'random_motion2': random_motion2,
 }
 
 def parse_latents(corruption, D):
@@ -288,9 +371,12 @@ def parse_latents(corruption, D):
     if 'mask' in corruption:
         use_latents = True
         latent_dim = [1, D, D]
-    elif corruption == 'motion_blur':
+    elif corruption == 'random_motion':
         use_latents = True
         latent_dim = [1]
+    elif corruption == 'random_motion2':
+        use_latents = True
+        latent_dim = [1, D, D]
     else:
         use_latents = False
         latent_dim = None
