@@ -7,14 +7,14 @@ import numpy as np
 
 sys.path.append('./src/')
 from utils import grab, cycle, count_parameters, infinite_dataloader
-from custom_datasets import dataset_dict, ImagesOnly
-from networks import DhariwalUNet, ConditionalDhariwalUNet
-from interpolant_utils import VelocityField, DeconvolvingInterpolant, save_fig
+from custom_datasets import dataset_dict, ImagesOnly, CorruptedDataset
+from networks import ConditionalDhariwalUNet
+from interpolant_utils import DeconvolvingInterpolant
 import forward_maps as fwd_maps
 from trainer_si import Trainer
 import argparse
 
-BASEPATH = '/mnt/ceph/users/cmodi/diffusion_guidance/'
+BASEPATH = '/mnt/ceph/users/cmodi/diffusion_guidance/singleview/'
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print("DEVICE : ", device)
 
@@ -70,12 +70,13 @@ if use_latents:
 b =  ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim,
                         model_channels=model_channels, gated=gated).to(device)
 print("Parameter count : ", count_parameters(b))
-dl = infinite_dataloader(DataLoader(image_dataset, batch_size = batch_size, shuffle = True, pin_memory = True, num_workers = 1))
 deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, n_steps=80).to(device)
+corrupt_dataset = CorruptedDataset(image_dataset, deconvolver.push_fwd, base_seed=42)
+# dl = infinite_dataloader(DataLoader(corrupt_dataset, batch_size = batch_size, shuffle = True, pin_memory = True, num_workers = 1))
 
 trainer = Trainer(model=b, 
         deconvolver=deconvolver, 
-        dataset = image_dataset,
+        dataset = corrupt_dataset,
         train_batch_size = batch_size,
         gradient_accumulate_every = 1,
         train_lr = lr,
