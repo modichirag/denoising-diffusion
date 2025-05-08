@@ -11,10 +11,10 @@ class VelocityField(torch.nn.Module):
 
         if self.use_compile:
             self.forward = torch.compile(self.forward)
-        
+
     def forward(self, x, t, latents=None):
         return self.model(x, t, latents=latents)
-    
+
 
 class DeconvolvingInterpolant(torch.nn.Module):
 
@@ -37,7 +37,8 @@ class DeconvolvingInterpolant(torch.nn.Module):
             x1 = self.push_fwd(x0, return_latents=False)
             latent1 = None
         t = torch.rand(x.shape[0]).to(x.device)
-        t = t.reshape(-1, 1, 1, 1)
+        new_shape = [-1] + [1] * (x.ndim - 1)
+        t = t.reshape(new_shape)
         It = (1-t)*x0 + t*x1
         b_true = x1 - x0
         bt   = b(It, torch.squeeze(t), latent1)
@@ -45,7 +46,7 @@ class DeconvolvingInterpolant(torch.nn.Module):
         return loss
 
     def transport(self, b, x, latent=None, return_trajectory=False):
-        
+
         traj = [x]
         with torch.no_grad():
             Xt_prev = x*1.
@@ -74,9 +75,34 @@ def save_fig(idx, image, corrupted, clean, results_folder, epsilon=""):
     axar[0, 0].set_ylabel('Original\nImage')
     axar[1, 0].set_ylabel(f'Corrupted\n$\sigma ${epsilon}')
     axar[2, 0].set_ylabel(f'Clean')
-    for axis in axar.flatten(): 
+    for axis in axar.flatten():
         axis.set_xticks([])
-        axis.set_yticks([])        
+        axis.set_yticks([])
+    plt.subplots_adjust(wspace=0.0, hspace=0.0)  # Reduce spacing
+    # plt.tight_layout()
+    plt.savefig(f'{results_folder}/denoising_{idx}.png', dpi=300)
+    plt.close()
+
+
+def save_fig_checker(idx, clean, corrupted, generated, results_folder, epsilon=""):
+    c = '#62508f' # plot color
+    fig, axes = plt.subplots(1,3, figsize=(12, 4))
+
+    axes[0].scatter(clean[:,0], clean[:,1], alpha = 0.03, c = c)
+    axes[0].set_title(r"Clean samples", fontsize = 18)
+    axes[0].set_xlim(-6,6), axes[0].set_ylim(-6,6)
+    axes[0].set_xticks([-4,0,4]), axes[0].set_yticks([-4,0,4]);
+
+    axes[1].scatter(corrupted[:,0], corrupted[:,1], alpha = 0.03, c = c)
+    axes[1].set_title(r"Corrupted samples", fontsize = 18)
+    axes[1].set_xlim(-6,6), axes[2].set_ylim(-6,6)
+    axes[1].set_xticks([-4,0,4]), axes[2].set_yticks([]);
+
+    axes[2].scatter(generated[:,0], generated[:,1], alpha = 0.03, c = c)
+    axes[2].set_title(r"Generated samples ", fontsize = 18)
+    axes[2].set_xlim(-6,6), axes[1].set_ylim(-6,6)
+    axes[2].set_xticks([-4,0,4]), axes[1].set_yticks([]);
+
     plt.subplots_adjust(wspace=0.0, hspace=0.0)  # Reduce spacing
     # plt.tight_layout()
     plt.savefig(f'{results_folder}/denoising_{idx}.png', dpi=300)
