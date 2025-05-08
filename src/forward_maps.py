@@ -272,7 +272,9 @@ def random_motion(kernel_size, epsilon):
         out = out.squeeze(0) if was_3d else out
 
         if return_latents:
-            return out, (angles / torch.pi).unsqueeze(1)
+            latent = (angles / torch.pi).unsqueeze(1)
+            latent = latent.squeeze(0) if was_3d else latent
+            return out, latent
         else:
             return out   
     return fwd
