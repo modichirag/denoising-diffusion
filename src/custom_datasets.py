@@ -100,6 +100,11 @@ cifar10_test = datasets.CIFAR10(
     ])
 )
 
+dataset_dict = {
+        'cifar10':[cifar10_train, 32, 3],
+        'mnist':[mnist_train, 32, 1]
+        }
+
 
 # dataset classes
 class CustomDataset(Dataset):
@@ -163,8 +168,26 @@ class NumpyImageDataset(Dataset):
         return img
 
 
-dataset_dict = {
-        'cifar10':[cifar10_train, 32, 3],
-        'mnist':[mnist_train, 32, 1]
-        }
+class CorruptedDataset(Dataset):
+    def __init__(self, base_dataset, corruption_fn, base_seed: int = 0):
+        """
+        base_dataset   : any Dataset returning (img, label)
+        corruption_fn  : fn(img, *, generator) -> img_corrupted
+        base_seed      : optional global offset for all seeds
+        """
+        self.base = base_dataset
+        self.corrupt = corruption_fn
+        self.base_seed = base_seed
+
+    def __len__(self):
+        return len(self.base)
+
+    def __getitem__(self, idx):
+        img = self.base[idx]
+        # make a fresh generator, seed it with (base_seed + idx)
+        gen = torch.Generator()
+        gen.manual_seed(self.base_seed + idx)
+        # apply your corruption; it must accept a `generator` kwarg
+        img_corrupted, latents = self.corrupt(img, return_latents=True, generator=gen)
+        return img_corrupted, latents
 
