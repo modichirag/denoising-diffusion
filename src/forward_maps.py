@@ -6,8 +6,9 @@ import torch.nn.functional as F
 
 def add_gaussian_noise(epsilon: float) -> callable:
     """Returns a function that adds Gaussian noise to an input tensor."""
-    def fwd(x, return_latents=False):
-        z = torch.randn_like(x).to(x.device)
+
+    def fwd(x, return_latents=False, generator=None):
+        z = torch.randn(x.shape, generator=generator).to(x.device)
         x_n = x + epsilon * z
         if return_latents: 
             return x_n, z
@@ -18,7 +19,7 @@ def add_gaussian_noise(epsilon: float) -> callable:
 def random_mask_image(mask_ratio: float, epsilon: float) -> callable:
     """Returns a function that randomly masks out a fraction of pixels in an image."""
 
-    def fwd(image: torch.Tensor, return_latents=False):
+    def fwd(image: torch.Tensor, return_latents=False, generator=None):
         """
         Args:
             image: a 3-D tensor of shape (C, H, W) or
@@ -31,20 +32,20 @@ def random_mask_image(mask_ratio: float, epsilon: float) -> callable:
             # Single image
             C, H, W = image.shape
             # sample a mask of shape (H, W)
-            prob = torch.rand(H, W, device=image.device)
+            prob = torch.rand(H, W, device=image.device, generator=generator)
             single_mask = (prob > mask_ratio).float()        # 1=keep, 0=mask
             mask = single_mask.unsqueeze(0)#.expand(C, H, W)  # (C, H, W)
         elif image.dim() == 4:
             # Batch of images
             N, C, H, W = image.shape
-            prob = torch.rand(N, H, W, device=image.device)
+            prob = torch.rand(N, H, W, device=image.device, generator=generator)
             batch_mask = (prob > mask_ratio).float()            # (N, H, W)
             mask = batch_mask.unsqueeze(1)#.expand(N, C, H, W)   # (N, C, H, W)
         else:
             raise ValueError(f"Expected 3D or 4D tensor, got {image.dim()}D")
 
         x_n = image * mask
-        z = torch.randn_like(image).to(image.device)
+        z = torch.randn(image.shape, generator=generator).to(image.device)
         x_n += z * epsilon
 
         if return_latents: 
@@ -99,9 +100,9 @@ def gaussian_blur(sigma: float, epsilon: float) -> callable:
     kernel_size = int(2 * math.ceil(3*sigma) + 1)
     gaussian_blur = transforms.GaussianBlur(kernel_size=kernel_size, sigma=sigma)
 
-    def fwd(x, return_latents=False):
+    def fwd(x, return_latents=False, generator=None):
         x_b = gaussian_blur(x)
-        z = torch.randn_like(x_b).to(x.device)
+        z = torch.randn(x_b.shape, generator=generator).to(x.device)
         x_b += epsilon * z
         if return_latents:
             return x_b, z
@@ -126,12 +127,12 @@ def random_block_mask(block_size, epsilon):
         mask:   FloatTensor same shape, with 1.0 where kept, 0.0 where masked.
     """
     # normalize block_size to a tuple
-    if isinstance(block_size, float):
+    if isinstance(block_size, float) or isinstance(block_size, int):
         bh = bw = int(block_size)
     else:
         bh, bw = int(block_size[0]), int(block_size[1])
 
-    def fwd(image, return_latents=False):
+    def fwd(image, return_latents=False,  generator=None):
         # handle single image vs batch
         if image.ndim == 3:
             img = image.unsqueeze(0)
@@ -149,17 +150,17 @@ def random_block_mask(block_size, epsilon):
         mask = torch.ones((N, 1, H, W), dtype=torch.float32, device=device)
 
         for n in range(N):
-            top  = torch.randint(0, H - bh + 1, (1,)).item()
-            left = torch.randint(0, W - bw + 1, (1,)).item()
+            top  = torch.randint(0, H - bh + 1, (1,), generator=generator).item()
+            left = torch.randint(0, W - bw + 1, (1,), generator=generator).item()
             mask[n, :, top:top+bh, left:left+bw] = 0.0
 
         # apply
         img *= mask
-        z = torch.randn_like(img).to(device)
+        z = torch.randn(img.shape, generator=generator).to(device)
         img += z * epsilon
         if squeeze_after:
             img = img.squeeze(0)
-        
+            mask = mask.squeeze(0)
         if return_latents:
             return img, mask
         else:
@@ -192,7 +193,7 @@ def motion_blur(kernel_size, angle, epsilon):
     k = F.grid_sample(k, grid, align_corners=False)
     k = k / k.sum()
 
-    def fwd(img, return_latents=False):
+    def fwd(img, return_latents=False, generator=None):
         # 2) Convolve
         # ensure img is batched
         was_3d = (img.dim() == 3)
@@ -203,14 +204,17 @@ def motion_blur(kernel_size, angle, epsilon):
         out = F.conv2d(img, weight=k.expand(img.size(1), -1, -1, -1).to(img.device),
                     padding=pad, groups=img.size(1))
         out = out.squeeze(0) if was_3d else out
-        z = torch.randn_like(img).to(img.device)
+        
+        z = torch.randn(img.shape, generator=generator).to(img.device)
         out += z * epsilon
-
+        if was_3d:
+            out = out.squeeze(0)
         if return_latents:
             return out, k
         else:
             return out   
     return fwd
+
 
 def random_motion(kernel_size, epsilon):
     """
@@ -226,7 +230,7 @@ def random_motion(kernel_size, epsilon):
     k = k.unsqueeze(0).unsqueeze(0)  # 1×1×k×k
     pad = kernel_size // 2
 
-    def fwd(img, return_latents=False):
+    def fwd(img, return_latents=False, generator=None):
         # Ensure img is batched
         was_3d = (img.dim() == 3)
         if was_3d:
@@ -235,7 +239,7 @@ def random_motion(kernel_size, epsilon):
         N, C, H, W = img.shape
 
         # sample angle and rotate via grid_sample
-        angles = (torch.rand(batch_size) - 0.5) * 360.
+        angles = (torch.rand(batch_size, generator=generator) - 0.5) * 360.
         angles = torch.deg2rad(angles).to(img.device)  # Convert to radians
         thetas = []
         for angle in angles:
@@ -263,14 +267,16 @@ def random_motion(kernel_size, epsilon):
         out = F.conv2d(img_reshaped, weight=weight, padding=pad, groups=N*C)
         out = out.view(N, C, H, W)     
 
-        z = torch.randn_like(img).to(img.device)
+        z = torch.randn(img.shape, generator=generator).to(img.device)
         out += z * epsilon
+        out = out.squeeze(0) if was_3d else out
 
         if return_latents:
             return out, (angles / torch.pi).unsqueeze(1)
         else:
             return out   
     return fwd
+
 
 def random_motion2(kernel_size, epsilon):
     """
@@ -330,7 +336,7 @@ def random_motion2(kernel_size, epsilon):
 
         return out
 
-    def fwd(img, angles=None, return_latents=False):
+    def fwd(img, angles=None, return_latents=False, generator=None):
         was_3d = (img.dim() == 3)
         if was_3d:
             img = img.unsqueeze(0)  # Add batch dimension
@@ -339,18 +345,24 @@ def random_motion2(kernel_size, epsilon):
 
         # sample angle and rotate via grid_sample
         if angles is  None:
-            angles = (torch.rand(batch_size) - 0.5) * 360.  
+            angles = (torch.rand(batch_size, generator=generator) - 0.5) * 360.  
         angles = angles.to(img.device)
         rads = torch.deg2rad(angles)
         cos, sin = torch.cos(rads), torch.sin(rads)
         out = torch.vmap(fwd_single, in_dims=(0, 0, 0), out_dims=(0))(img, cos, sin)
-        z = torch.randn_like(img).to(img.device)
+
+        z = torch.randn(img.shape, generator=generator).to(img.device)
         out += z*epsilon
+        out = out.squeeze(0) if was_3d else out
+
         if return_latents:
             latent = torch.vmap(direction_map_projection, in_dims=(0, 0, None, None), out_dims=(0))  (cos, sin, H, W)
-            return out, latent.unsqueeze(1)
+            latent = latent.unsqueeze(1)
+            latent = latent.squeeze(0) if was_3d else latent
+            return out, latent
         else:
             return out
+
     return fwd
 
 
