@@ -140,6 +140,7 @@ class Trainer:
     def train(self):
         device = self.device
         losses = []
+        min_loss = 1e10
         
         with tqdm(initial = self.step, total = self.train_num_steps, disable = not self.master_process) as pbar:
 
@@ -159,6 +160,7 @@ class Trainer:
                         total_loss += loss.item()
 
                     loss.backward()
+
                     for p in self.model.parameters():
                         if p.grad is not None and not p.grad.is_contiguous():
                             p.grad = p.grad.contiguous()
@@ -180,7 +182,13 @@ class Trainer:
                     self.ema.update()
 
                     if self.step != 0 and divisible_by(self.step, self.save_and_sample_every):
+                        if self.step % 5000 == 0:
+                            self.save(self.step)
                         self.save("latest")
+                        if losses[-1] < min_loss:
+                            min_loss = losses[-1]
+                            self.save("best")
+                            print(f"New best model at step {self.step} with loss {min_loss:.4f}")
                         self.ema.ema_model.eval()
 
                         with torch.autocast(device_type=device, dtype=typedict[self.mixed_precision_type]):
