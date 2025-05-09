@@ -1,21 +1,23 @@
 import numpy as np
 import torch
+import os
 from torch.utils.data import Dataset, DataLoader
 from torchvision import datasets, transforms
+import torch.nn.functional as F
 
 class ImagesOnly(Dataset):
         def __init__(self, base_dataset):
             self.base = base_dataset
-            
+
         def __len__(self):
             return len(self.base)
-        
+
         def __getitem__(self, idx):
             img, _ = self.base[idx]
             return img
 
+username = os.getenv('USER')
 
-        
 # 1) Define your transforms
 mnist_transforms = transforms.Compose([
     transforms.Pad(2),                              # [0,255]→[0,1]
@@ -68,27 +70,27 @@ cifar10_transforms_raw = transforms.Compose([
 
 # 2) Instantiate the datasets
 mnist_train = datasets.MNIST(
-    root="/mnt/ceph/users/cmodi/ML_data/mnist",      # download location
+    root=f"/mnt/ceph/users/{username}/ML_data/mnist",      # download location
     train=True,
     download=True,
     transform=mnist_transforms
 )
 mnist_test = datasets.MNIST(
-    root="/mnt/ceph/users/cmodi/ML_data/mnist",
+    root=f"/mnt/ceph/users/{username}/ML_data/mnist",
     train=False,
     download=True,
     transform=mnist_transforms
 )
 
 cifar10_train = datasets.CIFAR10(
-    root="/mnt/ceph/users/cmodi/ML_data/cifar10",
+    root=f"/mnt/ceph/users/{username}/ML_data/cifar10",
     train=True,
     download=True,
     transform=cifar10_transforms
 )
 
 cifar10_test = datasets.CIFAR10(
-    root="/mnt/ceph/users/cmodi/ML_data/cifar10",
+    root=f"/mnt/ceph/users/{username}/ML_data/cifar10",
     train=False,
     download=True,
     transform=transforms.Compose([
@@ -148,7 +150,7 @@ class NumpyImageDataset(Dataset):
         transform: torchvision.transforms (expects PIL or Tensor)
         """
         self.array = array
-        self.transform = transform 
+        self.transform = transform
         self.channel_first = channel_first
 
     def __len__(self):
@@ -160,9 +162,9 @@ class NumpyImageDataset(Dataset):
         if isinstance(img, np.ndarray):
             if self.channel_first:
                 img = torch.from_numpy(img).float()
-            else: 
+            else:
                 img = torch.from_numpy(img).permute(2,0,1).float()
-                
+
         if self.transform:
             img = self.transform(img)
         return img
@@ -195,3 +197,26 @@ class CorruptedDataset(Dataset):
         img_corrupted, latents = self.corrupt(img, return_latents=True, generator=gen)
         return img, img_corrupted, latents
 
+
+class ManifoldDataset(Dataset):
+    def __init__(self, npz_filepath, epsilon):
+        loaded_data = np.load(npz_filepath)
+        self.x_data = torch.from_numpy(loaded_data['x']).float()
+        self.y_data = torch.from_numpy(loaded_data['y']).float()
+        self.A_data = torch.from_numpy(loaded_data['A']).float()
+        padded_data = torch.randn((self.x_data.shape[0], self.x_data.shape[1] - self.y_data.shape[1]))
+        self.y_data = torch.cat((self.y_data, padded_data), dim=1)
+
+        if not (len(self.x_data) == len(self.y_data) == len(self.A_data)):
+            raise ValueError("All arrays must have the same number of samples (first dimension)")
+
+    def __len__(self):
+        return len(self.x_data)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+        sample_x = self.x_data[idx]
+        sample_y = self.y_data[idx]
+        sample_A = self.A_data[idx]
+        return sample_x, sample_y, sample_A

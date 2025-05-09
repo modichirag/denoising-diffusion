@@ -2,19 +2,20 @@ import sys, os
 import torch
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.set_float32_matmul_precision('high')
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 import numpy as np
 from tqdm import tqdm
 
 sys.path.append('./src/')
 from utils import  cycle, count_parameters, infinite_dataloader, grab
 from nets import SimpleFeedForward
+from custom_datasets import ManifoldDataset
 from distribution import DistributionDataLoader, CheckerDistribution
-from interpolant_utils import VelocityField, DeconvolvingInterpolant, save_fig_checker
+from interpolant_utils import DeconvolvingInterpolant, save_fig_checker, save_fig_manifold
 import forward_maps as fwd_maps
 from trainer_si import Trainer
 import argparse
-
+import matplotlib.pyplot as plt
 
 BASEPATH = '/mnt/home/jhan/stoch-int-priors/results'
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -22,11 +23,11 @@ print("DEVICE : ", device)
 
 parser = argparse.ArgumentParser(description="")
 parser.add_argument("--dataset", type=str, default="checker", help="dataset")
-parser.add_argument("--corruption", type=str, default="gaussian_noise", help="corruption")
+parser.add_argument("--corruption", type=str, default="projection", help="corruption")
 parser.add_argument("--corruption_levels", type=float, nargs='+', help="corruption level")
 parser.add_argument("--fc_width", type=int, default=128, help="width of the feedforward network")
 parser.add_argument("--fc_depth", type=int, default=3, help="depth of the feedforward network")
-parser.add_argument("--train_steps", type=int, default=10000, help="number of channels in model")
+parser.add_argument("--train_steps", type=int, default=40000, help="number of channels in model")
 parser.add_argument("--batch_size", type=int, default=4000, help="batch size")
 parser.add_argument("--learning_rate", type=float, default=1e-3, help="learning rate")
 parser.add_argument("--prefix", type=str, default='', help="prefix for folder name")
@@ -35,7 +36,8 @@ parser.add_argument("--lr_scheduler", action='store_true', help="use scheduler i
 
 # Parse arguments
 args = parser.parse_args()
-# args = parser.parse_args(['--corruption_levels', '0.4'])
+# args = parser.parse_args(['--corruption_levels', '2.0', '0.05',
+#                           '--suffix', ''])
 
 print(args)
 train_num_steps = args.train_steps
@@ -62,10 +64,33 @@ print(f"Results will be saved in folder: {results_folder}")
 use_latents, latent_dim = fwd_maps.parse_latents(corruption, None)
 
 # Initialize model and train
-b =  SimpleFeedForward(2, [args.fc_width]*args.fc_depth).to(device)
-print("Parameter count : ", count_parameters(b))
-dl = DistributionDataLoader(CheckerDistribution(device=device), batch_size=batch_size)
 deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, n_steps=40).to(device)
+if args.dataset == "checker":
+    dim_in = 2
+    dl = DistributionDataLoader(CheckerDistribution(device=device), batch_size=batch_size)
+    save_fig_fn = save_fig_checker
+    clean_data_valid = dl.distribution.sample(20000).to(device)
+elif args.dataset == "manifold_ds":
+    dim_in = 5
+    dataset = ManifoldDataset("/mnt/home/jhan/diffusion-priors/experiments/manifold/manifold_dataset.npz", epsilon=0.01)
+    dl = infinite_dataloader(DataLoader(dataset, batch_size = batch_size, shuffle = True, pin_memory = True, num_workers = 1))
+    save_fig_fn = save_fig_manifold
+    clean_data_valid = dataset.x_data[:5000].to(device)
+corrupted_valid, latents_valid = deconvolver.push_fwd(clean_data_valid, return_latents=True)
+latents_valid = latents_valid if use_latents else None
+if args.corruption == "projection":
+    latent_dim = dim_in * int(args.corruption_levels[0])
+else:
+    latent_dim = None
+if args.corruption == "projection" and dim_in == int(args.corruption_levels[0]):
+    corrupted_valid_plot = torch.linalg.solve(latents_valid, corrupted_valid)
+else:
+    corrupted_valid_plot = corrupted_valid
+
+# to update architecture
+b =  SimpleFeedForward(dim_in, [args.fc_width]*args.fc_depth, latent_dim=latent_dim).to(device)
+# b =  FeedForwardwithEMB(dim_in, 64, [args.fc_width]*args.fc_depth, latent_dim=latent_dim).to(device)
+print("Parameter count : ", count_parameters(b))
 
 # trainer = Trainer(model=b,
 #         deconvolver=deconvolver,
@@ -81,9 +106,9 @@ deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, n_steps
 
 # trainer.train()
 
-def train_step(xn, b, deconvolver, opt, sched):
+def train_step(xn, b, latents, deconvolver, opt, sched):
     # ts  = torch.rand(xn.shape[0]).to(device)
-    loss_val = deconvolver.loss_fn(b, xn)
+    loss_val = deconvolver.loss_fn(b, xn, latents)
     # perform backprop
     loss_val.backward()
     opt.step()
@@ -99,24 +124,47 @@ losses = []
 pbar = tqdm(range(train_num_steps))
 for i in pbar:
     b.train()
-    x = next(dl).to(device)
-    xn = deconvolver.push_fwd(x)
-    res = train_step(xn, b, deconvolver, opt, sched)
+    # TODO: update dl for checker
+    if args.dataset == "checker":
+        x = next(dl).to(device)
+        xn, latents = deconvolver.push_fwd(x, return_latents=True)
+        latents = latents if use_latents else None
+    else:
+        _, xn, latents = next(dl)
+        xn = xn.to(device)
+        latents = latents.to(device) if deconvolver.use_latents else None
+    res = train_step(xn, b, latents, deconvolver, opt, sched)
     loss = res['loss'].detach().numpy().mean()
     losses.append(loss)
     pbar.set_description(f'Loss: {loss:.4f}')
     if i % save_and_sample_every == 0:
         torch.save(b.state_dict(), f"{results_folder}/model.pt")
         np.save(f"{results_folder}/losses", losses)
-        clean = dl.distribution.sample(20000).to(device)
-        corrupted = deconvolver.push_fwd(clean)
-        generated = deconvolver.transport(b, corrupted)
-        save_fig_checker(i, grab(clean), grab(corrupted), grab(generated), results_folder, None)
+        generated = deconvolver.transport(b, corrupted_valid, latents_valid)
+        save_fig_fn(i, grab(clean_data_valid), grab(corrupted_valid_plot), grab(generated), results_folder, None)
         print(f"Saved model at step {i}")
 
 torch.save(b.state_dict(), f"{results_folder}/model.pt")
 np.save(f"{results_folder}/losses", losses)
-clean = dl.distribution.sample(20000).to(device)
-corrupted = deconvolver.push_fwd(clean)
-generated = deconvolver.transport(b, corrupted)
-save_fig_checker('final', grab(clean), grab(corrupted), grab(generated), results_folder, None)
+corrupted, latents = deconvolver.push_fwd(clean_data_valid, return_latents=True)
+latents = latents if use_latents else None
+generated = deconvolver.transport(b, corrupted, latents)
+save_fig_fn('final', grab(clean_data_valid), grab(corrupted_valid_plot), grab(generated), results_folder, None)
+
+# Plotting the loss curve
+# losses = np.load(f"{results_folder}/losses.npy")
+steps = np.arange(len(losses))
+fig, axs = plt.subplots(1, 2, figsize=(12, 4))
+axs[0].semilogy(steps, losses, marker='.', linestyle='-', markersize=4, alpha=0.7)
+axs[0].set_xlabel("Steps")
+axs[0].set_ylabel("Loss (log scale)")
+axs[0].set_title("Loss Curve (Semi-Log Y Scale)")
+axs[0].grid(True, which="both", ls="--", alpha=0.5)
+axs[1].loglog(steps, losses, marker='.', linestyle='-', markersize=4, alpha=0.7, color='orangered')
+axs[1].set_xlabel("Steps (log scale)")
+axs[1].set_ylabel("Loss (log scale)")
+axs[1].set_title("Loss Curve (Log-Log Scale)")
+axs[1].grid(True, which="both", ls="--", alpha=0.5)
+plt.tight_layout()
+plt.savefig(os.path.join(results_folder, 'losses.png'), dpi=300, bbox_inches='tight')
+plt.show()

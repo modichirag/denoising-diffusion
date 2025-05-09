@@ -1,5 +1,7 @@
 import torch
 import matplotlib.pyplot as plt
+import seaborn
+import pandas as pd
 from utils import grab
 
 class VelocityField(torch.nn.Module):
@@ -131,3 +133,21 @@ def save_fig_checker(idx, clean, corrupted, generated, results_folder, epsilon="
     # plt.tight_layout()
     plt.savefig(f'{results_folder}/denoising_{idx}.png', dpi=300)
     plt.close()
+
+
+def save_fig_manifold(idx, clean, corrupted, generated, results_folder, epsilon=""):
+    cmap = plt.get_cmap('Blues')
+    colors = [cmap(i) for i in range(16, cmap.N)]
+    colors = [(1.0, 1.0, 1.0), *colors]
+    cmap = plt.cm.colors.ListedColormap(colors)
+
+    pairplot_grid = seaborn.pairplot(
+        data=pd.DataFrame({f'x{i}': xi for i, xi in enumerate((generated).T)}),
+        corner=True,
+        kind='hist',
+        plot_kws={'bins': 64, 'binrange': (-3, 3), 'thresh': None, 'cmap': cmap},
+        diag_kws={'bins': 64, 'binrange': (-3, 3), 'element': 'step', 'color': cmap(cmap.N // 2)},
+    )
+    pairplot_grid.tight_layout(pad=0.5)
+    pairplot_grid.savefig(f'{results_folder}/denoising_{idx}.png', dpi=300)
+    plt.close(pairplot_grid.fig)
