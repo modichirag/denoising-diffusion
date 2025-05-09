@@ -16,7 +16,6 @@ from utils import infinite_dataloader, grab, num_to_groups
 from tqdm.auto import tqdm
 
 
-BASEPATH = '/mnt/ceph/users/cmodi/diffusion_guidance/'
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print("DEVICE : ", device)
 
@@ -30,13 +29,18 @@ parser.add_argument("--n_samples", type=int, default=10_000, help="Samples to ev
 parser.add_argument("--batch_size", type=int, default=128, help="batch size")
 parser.add_argument("--prefix", type=str, default='', help="prefix for folder name")
 parser.add_argument("--suffix", type=str, default='', help="suffix for folder name")
+parser.add_argument("--subfolder", type=str, default='', help="subfolder for folder name")
 parser.add_argument("--gated", action='store_true', help="gated convolution if provided, else not")
 parser.add_argument("--ode_steps", type=int, default=80, help="number of steps for ODE sampling")
-
-
-# Parse arguments
+parser.add_argument("--multiview", action='store_true', help="change corruption every epoch if provided, else not")
 args = parser.parse_args()
 print(args)
+if args.multiview:
+    BASEPATH = '/mnt/ceph/users/cmodi/diffusion_guidance/multiview/'
+else:
+    BASEPATH = '/mnt/ceph/users/cmodi/diffusion_guidance/singleview/'
+
+# Parse arguments
 dataset, D, nc = dataset_dict[args.dataset]
 dl = infinite_dataloader(DataLoader(ImagesOnly(dataset), 
                                     batch_size = args.batch_size, \
@@ -44,6 +48,7 @@ dl = infinite_dataloader(DataLoader(ImagesOnly(dataset),
 gated = args.gated
 if gated: 
     args.suffix = f"{args.suffix}-gated" if args.suffix else "gated"
+print(BASEPATH)
 
 # Parse corruption arguments
 corruption = args.corruption
@@ -57,22 +62,18 @@ cname = "-".join([f"{i:0.2f}" for i in corruption_levels])
 folder = f"{args.dataset}-{corruption}-{cname}"
 if args.prefix != "": folder = f"{args.prefix}-{folder}"
 if args.suffix != "": folder = f"{folder}-{args.suffix}"
+if args.subfolder != "": folder = f"{folder}/{args.subfolder}/"
+
 folder = f"{BASEPATH}/{folder}/"
 results_folder = f"{folder}/results"
 os.makedirs(results_folder, exist_ok=True)
-print(f"Results will be saved in folder: {results_folder}")
+print(f"Models will be loaded from folder: {folder}")
+use_latents, latent_dim = fwd_maps.parse_latents(corruption, D)
+if use_latents:
+    print("Will use latents of dimension: ", latent_dim)
 n = int(args.n_samples/1e3)
 save_name = f"{results_folder}/fid_{n}k_{args.ode_steps}steps.json"
 print(f"Results will be saved in file: {save_name}")
-
-# Latents
-if 'mask' in corruption:
-    use_latents = True
-    print("Will be using latents: ", use_latents)
-    latent_dim = [1, D, D]
-else:
-    use_latents = False
-    latent_dim = None
 
 # Load model
 deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, n_steps=args.ode_steps).to(device)
