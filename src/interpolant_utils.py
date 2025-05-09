@@ -18,32 +18,56 @@ class VelocityField(torch.nn.Module):
 
 class DeconvolvingInterpolant(torch.nn.Module):
 
-    def __init__(self, push_fwd, use_latents=False, n_steps=80):
+    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1):
         super().__init__()
         self.push_fwd = push_fwd
         self.n_steps = n_steps
         self.delta_t = 1 / self.n_steps
         self.use_latents = use_latents
+        self.alpha = alpha
+        self.resamples = resamples
         if use_latents:
             print("Using latents for deonvolving")
+
+    # def loss_fn(self, b, x, latent=None):
+
+    #     x0 = self.transport(b, x, latent=latent)
+    #     x1, latent1 = self.push_fwd(x0, return_latents=True)
+    #     latent1 = latent1 if self.use_latents else None
+    #     t = torch.rand(x.shape[0]).to(x.device)
+    #     new_shape = [-1] + [1] * (x.ndim - 1)
+    #     t = t.reshape(new_shape)
+    #     It = (1-t)*x0 + t*x1
+    #     b_true = x1 - x0
+    #     bt   = b(It, torch.squeeze(t), latent1)
+    #     loss = torch.mean((bt - b_true)**2)
+    #     return loss
 
     def loss_fn(self, b, x, latent=None):
 
         x0 = self.transport(b, x, latent=latent)
-        if self.use_latents:
-            assert latent is not None
+        batch_size = x.shape[0]
+        loss = 0.
+        for i in range(self.resamples):
             x1, latent1 = self.push_fwd(x0, return_latents=True)
-        else:
-            x1 = self.push_fwd(x0, return_latents=False)
-            latent1 = None
-        t = torch.rand(x.shape[0]).to(x.device)
-        new_shape = [-1] + [1] * (x.ndim - 1)
-        t = t.reshape(new_shape)
-        It = (1-t)*x0 + t*x1
-        b_true = x1 - x0
-        bt   = b(It, torch.squeeze(t), latent1)
-        loss = torch.mean((bt - b_true)**2)
-        return loss
+            latent1 = latent1 if self.use_latents else None
+            # pick data with probabability 1-alpha
+            raw_mask = torch.bernoulli(torch.full((batch_size,), self.alpha)).to(x.device)
+            mask = raw_mask.view(batch_size, *([1] * (x.ndim - 1)))
+            x1 = x1 * mask + x * (1 - mask)
+            if latent1 is not None:
+                mask = raw_mask.view(batch_size, *([1] * (latent1.ndim - 1)))
+                latent1 = latent1 * mask + latent * (1 - mask)
+            # proceed as before
+            t = torch.rand(x.shape[0]).to(x.device)
+            new_shape = [-1] + [1] * (x.ndim - 1)
+            t = t.reshape(new_shape)
+            It = (1-t)*x0 + t*x1
+            b_true = x1 - x0
+            bt   = b(It, torch.squeeze(t), latent1)
+            loss += torch.mean((bt - b_true)**2)
+        return loss / self.resamples
+
 
     def transport(self, b, x, latent=None, return_trajectory=False):
 
