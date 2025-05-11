@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 sys.path.append('./src/')
 from utils import  cycle, count_parameters, infinite_dataloader, grab
-from nets import SimpleFeedForward
+from nets import SimpleFeedForward, FeedForwardwithEMB
 from custom_datasets import ManifoldDataset
 from distribution import DistributionDataLoader, CheckerDistribution
 from interpolant_utils import DeconvolvingInterpolant, save_fig_checker, save_fig_manifold
@@ -25,7 +25,7 @@ parser = argparse.ArgumentParser(description="")
 parser.add_argument("--dataset", type=str, default="checker", help="dataset")
 parser.add_argument("--corruption", type=str, default="projection", help="corruption")
 parser.add_argument("--corruption_levels", type=float, nargs='+', help="corruption level")
-parser.add_argument("--fc_width", type=int, default=128, help="width of the feedforward network")
+parser.add_argument("--fc_width", type=int, default=256, help="width of the feedforward network")
 parser.add_argument("--fc_depth", type=int, default=3, help="depth of the feedforward network")
 parser.add_argument("--train_steps", type=int, default=40000, help="number of channels in model")
 parser.add_argument("--batch_size", type=int, default=4000, help="batch size")
@@ -88,8 +88,8 @@ else:
     corrupted_valid_plot = corrupted_valid
 
 # to update architecture
-b =  SimpleFeedForward(dim_in, [args.fc_width]*args.fc_depth, latent_dim=latent_dim).to(device)
-# b =  FeedForwardwithEMB(dim_in, 64, [args.fc_width]*args.fc_depth, latent_dim=latent_dim).to(device)
+# b =  SimpleFeedForward(dim_in, [args.fc_width]*args.fc_depth, latent_dim=latent_dim).to(device)
+b =  FeedForwardwithEMB(dim_in, 64, [args.fc_width]*args.fc_depth, latent_dim=latent_dim).to(device)
 print("Parameter count : ", count_parameters(b))
 
 # trainer = Trainer(model=b,
