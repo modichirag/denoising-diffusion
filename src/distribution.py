@@ -44,3 +44,8 @@ class MoonDistribution:
 
         # Convert to torch tensor with float32
         return 4.0*(torch.tensor(X_moon, dtype=torch.float32).to(self.device)-0.5)
+
+distribution_dict = {
+    'checker': CheckerDistribution,
+    'moon': MoonDistribution
+}

@@ -687,7 +687,7 @@ def mri_subsampling3(r, epsilon, downscale_factor=4, mode='same_rate'):
     return fwd
 
 
-def random_projection(dim_out: float, epsilon: float) -> callable:
+def random_projection_coeff(dim_out: float, epsilon: float) -> callable:
     dim_out = int(dim_out)
     def measure(A: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         """
@@ -728,6 +728,62 @@ def random_projection(dim_out: float, epsilon: float) -> callable:
             return x_n
     return fwd
 
+def random_projection_vec(dim_out: float, epsilon: float) -> callable:
+    dim_out = int(dim_out)
+    def project_einsum(A: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """
+        Computes A^T(Ax) efficiently using a single einsum call.
+        Equivalent to p_i = sum_j sum_k A_ji A_jk x_k
+
+        A: shape (..., M, N) - The matrix defining the subspace basis vectors (rows)
+                                (Indices represented as ...jk)
+        x: shape (..., N)    - The vector (or batch of vectors) to project
+                                (Indices represented as ...k)
+        Returns: shape (..., N) - The projection vector p = A^T A x
+                                (Indices represented as ...i)
+    """
+        # A (...ji) - effectively A^T
+        # A (...jk) - the regular A
+        # x (...k)  - the vector x
+        # Sum over j (size M) and k (size N). Output indexed by i (size N).
+        p = torch.einsum('...ji,...jk,...k->...i', A, A, x)
+        return p
+
+    def fwd(x: torch.Tensor, return_latents=False, generator=None):
+        """
+        Args:
+            x: a 2-D tensor of shape (B, dim_in)
+        """
+        N, dim_in = x.shape
+        A = torch.randn(N, dim_out, dim_in, device=x.device)
+        A = A / torch.linalg.norm(A, dim=-1, keepdim=True)
+        # A = (2.0*torch.rand([N, 1, dim_in], device=x.device)-1.0)
+        # Below is random 2 * 2 rotation matrix for test
+        # theta = torch.rand(N, device=x.device,) * 2 * torch.pi
+        # cos_theta = torch.cos(theta)
+        # sin_theta = torch.sin(theta)
+        # A = torch.zeros(N, 2, 2, device=x.device)
+        # A[:, 0, 0] = cos_theta
+        # A[:, 0, 1] = -sin_theta
+        # A[:, 1, 0] = sin_theta
+        # A[:, 1, 1] = cos_theta
+
+        x_n = project_einsum(A, x)
+        # add mixture with ful-rank projection
+        # A2 = torch.randn(N, dim_in, dim_in, device=x.device)
+        # A2 = A2 / torch.linalg.norm(A2, dim=-1, keepdim=True)
+        # x_n2 = project_einsum(A2, x)
+        # raw_mask = torch.bernoulli(torch.full((N, 1), 0.5)).to(x.device)
+        # x_n = torch.where(raw_mask == 1, x_n, x_n2)
+        z = torch.randn(x_n.shape, generator=generator).to(x.device)
+        x_n += z * epsilon
+
+        if return_latents:
+            return x_n, A
+        else:
+            return x_n
+    return fwd
+
 
 corruption_dict = {
     'gaussian_noise': add_gaussian_noise,
@@ -742,7 +798,8 @@ corruption_dict = {
     'mri': mri_subsampling,
     'mri2': mri_subsampling2,
     'mri3': mri_subsampling3,
-    'projection': random_projection
+    'projection_coeff': random_projection_coeff,
+    'projection_vec': random_projection_vec
 }
 
 def parse_latents(corruption, D, s=4):
@@ -768,9 +825,9 @@ def parse_latents(corruption, D, s=4):
     elif corruption == 'jpeg_compress':
         use_latents = True
         latent_dim = [1]
-    elif corruption == 'projection':
+    elif corruption == 'projection_coeff':
         use_latents = True
-        latent_dim = [1, 2, 5]
+        latent_dim = [1] # artificial, to be corrected later
     else:
         use_latents = False
         latent_dim = None
