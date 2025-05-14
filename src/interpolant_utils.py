@@ -203,9 +203,12 @@ def save_fig(idx, image, corrupted, clean, results_folder, epsilon=""):
     plt.close()
 
 
-def save_fig_checker(idx, clean, corrupted, generated, results_folder, epsilon=""):
+def save_fig_checker(idx, clean, corrupted, generated, results_folder, push_fwd_func=None):
     c = '#62508f' # plot color
-    fig, axes = plt.subplots(1,3, figsize=(15, 5))
+    if push_fwd_func is None:
+        fig, axes = plt.subplots(1,3, figsize=(15, 5))
+    else:
+        fig, axes = plt.subplots(1,4, figsize=(20, 5))
 
     axes[0].scatter(clean[:,0], clean[:,1], alpha = 0.03, c = c)
     axes[0].set_title(r"Clean samples", fontsize = 18)
@@ -222,13 +225,20 @@ def save_fig_checker(idx, clean, corrupted, generated, results_folder, epsilon="
     axes[2].set_xlim(-6,6), axes[1].set_ylim(-6,6)
     axes[2].set_xticks([-4,0,4]), axes[1].set_yticks([])
 
+    if push_fwd_func is not None:
+        generated_corrupted = push_fwd_func(torch.from_numpy(generated)).numpy()
+        axes[3].scatter(generated_corrupted[:,0], generated_corrupted[:,1], alpha = 0.03, c = c)
+        axes[3].set_title(r"Generated corrupted samples ", fontsize = 18)
+        axes[3].set_xlim(-6,6), axes[3].set_ylim(-6,6)
+        axes[3].set_xticks([-4,0,4]), axes[3].set_yticks([])
+
     plt.subplots_adjust(wspace=0.0, hspace=0.0)  # Reduce spacing
     # plt.tight_layout()
     plt.savefig(f'{results_folder}/denoising_{idx}.png', dpi=300)
     plt.close()
 
 
-def save_fig_manifold(idx, clean, corrupted, generated, results_folder, epsilon=""):
+def save_fig_manifold(idx, clean, corrupted, generated, results_folder, push_fwd_func=None):
     cmap = plt.get_cmap('Blues')
     colors = [cmap(i) for i in range(16, cmap.N)]
     colors = [(1.0, 1.0, 1.0), *colors]

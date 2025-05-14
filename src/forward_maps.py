@@ -730,6 +730,9 @@ def random_projection_coeff(dim_out: float, epsilon: float) -> callable:
 
 def random_projection_vec(dim_out: float, epsilon: float) -> callable:
     dim_out = int(dim_out)
+    # for testing on fixed A
+    A_base = torch.randn(1, dim_out, 2, device='cuda')
+    A_base = A_base / torch.linalg.norm(A_base, dim=-1, keepdim=True)
     def project_einsum(A: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         """
         Computes A^T(Ax) efficiently using a single einsum call.
@@ -755,18 +758,10 @@ def random_projection_vec(dim_out: float, epsilon: float) -> callable:
             x: a 2-D tensor of shape (B, dim_in)
         """
         N, dim_in = x.shape
+        # A = A_base.repeat(N, 1, 1).to(x.device)
         A = torch.randn(N, dim_out, dim_in, device=x.device)
         A = A / torch.linalg.norm(A, dim=-1, keepdim=True)
         # A = (2.0*torch.rand([N, 1, dim_in], device=x.device)-1.0)
-        # Below is random 2 * 2 rotation matrix for test
-        # theta = torch.rand(N, device=x.device,) * 2 * torch.pi
-        # cos_theta = torch.cos(theta)
-        # sin_theta = torch.sin(theta)
-        # A = torch.zeros(N, 2, 2, device=x.device)
-        # A[:, 0, 0] = cos_theta
-        # A[:, 0, 1] = -sin_theta
-        # A[:, 1, 0] = sin_theta
-        # A[:, 1, 1] = cos_theta
 
         x_n = project_einsum(A, x)
         # add mixture with ful-rank projection
@@ -825,7 +820,7 @@ def parse_latents(corruption, D, s=4):
     elif corruption == 'jpeg_compress':
         use_latents = True
         latent_dim = [1]
-    elif corruption == 'projection_coeff':
+    elif corruption == 'projection_coeff' or corruption == 'projection_vec':
         use_latents = True
         latent_dim = [1] # artificial, to be corrected later
     else:
