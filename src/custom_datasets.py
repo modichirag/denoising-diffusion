@@ -4,6 +4,7 @@ import os
 from torch.utils.data import Dataset, DataLoader
 from torchvision import datasets, transforms
 import torch.nn.functional as F
+from forward_maps import compute_At_y
 
 class ImagesOnly(Dataset):
         def __init__(self, base_dataset):
@@ -202,10 +203,10 @@ class ManifoldDataset(Dataset):
     def __init__(self, npz_filepath, epsilon):
         loaded_data = np.load(npz_filepath)
         self.x_data = torch.from_numpy(loaded_data['x']).float()
-        self.y_data = torch.from_numpy(loaded_data['y']).float()
+        self.y_data_original = torch.from_numpy(loaded_data['y']).float()
         self.A_data = torch.from_numpy(loaded_data['A']).float()
-        padded_data = torch.randn((self.x_data.shape[0], self.x_data.shape[1] - self.y_data.shape[1]))
-        self.y_data = torch.cat((self.y_data, padded_data), dim=1)
+        # y_data_original is 2-dim while y_data is 5-dim
+        self.y_data = compute_At_y(self.A_data, self.y_data_original)
 
         if not (len(self.x_data) == len(self.y_data) == len(self.A_data)):
             raise ValueError("All arrays must have the same number of samples (first dimension)")
@@ -220,3 +221,16 @@ class ManifoldDataset(Dataset):
         sample_y = self.y_data[idx]
         sample_A = self.A_data[idx]
         return sample_x, sample_y, sample_A
+
+class Manifold_A_Dataset(Dataset):
+    def __init__(self, npz_filepath):
+        loaded_data = np.load(npz_filepath)
+        self.A_data = torch.from_numpy(loaded_data['A']).float()
+
+    def __len__(self):
+        return len(self.A_data)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+        return self.A_data[idx]

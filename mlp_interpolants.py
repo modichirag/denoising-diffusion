@@ -7,9 +7,9 @@ import numpy as np
 from tqdm import tqdm
 
 sys.path.append('./src/')
-from utils import  cycle, count_parameters, infinite_dataloader, grab
+from utils import count_parameters, infinite_dataloader, grab
 from nets import SimpleFeedForward, FeedForwardwithEMB
-from custom_datasets import ManifoldDataset
+from custom_datasets import ManifoldDataset, Manifold_A_Dataset
 from distribution import DistributionDataLoader, distribution_dict
 from interpolant_utils import DeconvolvingInterpolant, save_fig_checker, save_fig_manifold
 import forward_maps as fwd_maps
@@ -22,12 +22,12 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print("DEVICE : ", device)
 
 parser = argparse.ArgumentParser(description="")
-parser.add_argument("--dataset", type=str, default="gmm", help="dataset")
-parser.add_argument("--corruption", type=str, default="projection_vec", help="corruption")
+parser.add_argument("--dataset", type=str, default="manifold_ds", help="dataset")
+parser.add_argument("--corruption", type=str, default="projection_vec_ds", help="corruption")
 parser.add_argument("--corruption_levels", type=float, nargs='+', help="corruption level")
 parser.add_argument("--fc_width", type=int, default=256, help="width of the feedforward network")
 parser.add_argument("--fc_depth", type=int, default=3, help="depth of the feedforward network")
-parser.add_argument("--train_steps", type=int, default=40000, help="number of channels in model")
+parser.add_argument("--train_steps", type=int, default=20000, help="number of channels in model")
 parser.add_argument("--batch_size", type=int, default=4000, help="batch size")
 parser.add_argument("--learning_rate", type=float, default=1e-3, help="learning rate")
 parser.add_argument("--prefix", type=str, default='', help="prefix for folder name")
@@ -36,7 +36,7 @@ parser.add_argument("--lr_scheduler", action='store_true', help="use scheduler i
 
 # Parse arguments
 args = parser.parse_args()
-# args = parser.parse_args(['--corruption_levels', '1.0', '0.05',
+# args = parser.parse_args(['--corruption_levels', '2.0', '0.01',
 #                           '--suffix', 'test'])
 
 print(args)
@@ -49,11 +49,18 @@ lr_scheduler = args.lr_scheduler
 # Parse corruption arguments
 corruption = args.corruption # to fix
 corruption_levels = args.corruption_levels
-try:
-    fwd_func = fwd_maps.corruption_dict[corruption](*corruption_levels)
-except Exception as e:
-    print("Exception in loading corruption function : ", e)
-    sys.exit()
+if args.corruption == "projection_vec_ds":
+    assert args.dataset == "manifold_ds", "For projection_vec_ds, dataset should be manifold_ds"
+    assert corruption_levels[1] == 0.01, "For projection_vec_ds, corruption_levels[1] should be 0.01"
+    A_dataset = Manifold_A_Dataset("/mnt/home/jhan/diffusion-priors/experiments/manifold/manifold_dataset.npz")
+    dl_A = DataLoader(A_dataset, batch_size = batch_size, shuffle = True, pin_memory = True, num_workers = 1, drop_last = True)
+    fwd_func = fwd_maps.corruption_dict[corruption](dl_A)
+else:
+    try:
+        fwd_func = fwd_maps.corruption_dict[corruption](*corruption_levels)
+    except Exception as e:
+        print("Exception in loading corruption function : ", e)
+        sys.exit()
 cname = "-".join([f"{i:0.2f}" for i in corruption_levels])
 folder = f"{args.dataset}-{corruption}-{cname}"
 if args.prefix != "": folder = f"{args.prefix}-{folder}"
@@ -64,7 +71,7 @@ print(f"Results will be saved in folder: {results_folder}")
 use_latents, latent_dim = fwd_maps.parse_latents(corruption, None)
 
 # Initialize model and train
-clean_data_step = -2000
+clean_data_step = -3000
 alpha = 1.0
 use_follmer = False
 if use_follmer:
@@ -96,13 +103,15 @@ elif args.dataset == 'gmm':
     clean_data_valid = dl.distribution.sample(10000).to(device)
 elif args.dataset == "manifold_ds":
     dim_in = 5
-    dataset = ManifoldDataset("/mnt/home/jhan/diffusion-priors/experiments/manifold/manifold_dataset.npz", epsilon=0.01)
-    dl = infinite_dataloader(DataLoader(dataset, batch_size = batch_size, shuffle = True, pin_memory = True, num_workers = 1))
+    dataset = ManifoldDataset("/mnt/home/jhan/diffusion-priors/experiments/manifold/manifold_dataset.npz", epsilon=corruption_levels[1])
+    dl = infinite_dataloader(DataLoader(dataset, batch_size = batch_size, shuffle = True, pin_memory = True, num_workers = 0, drop_last = True))
     save_fig_fn = save_fig_manifold
     clean_data_valid = dataset.x_data[:5000].to(device)
+else:
+    raise ValueError(f"Unknown dataset: {args.dataset}")
 corrupted_valid, latents_valid = deconvolver.push_fwd(clean_data_valid, return_latents=True)
 latents_valid = latents_valid if use_latents else None
-if (args.corruption == "projection_coeff" or corruption == "projection_vec") and use_latents:
+if args.corruption.startswith("projection") and use_latents:
     latent_dim = dim_in * int(args.corruption_levels[0])
 else:
     latent_dim = None
@@ -156,14 +165,15 @@ for i in pbar:
         xn, latents = deconvolver.push_fwd(x, return_latents=True)
         latents = latents if use_latents else None
     else:
-        # x, xn, latents = next(dl)
-        # x = x.to(device)
-        # xn = xn.to(device)
-        # latents = latents.to(device) if deconvolver.use_latents else None
-        x, _, _ = next(dl)
-        x = x.to(device)
-        xn, latents = deconvolver.push_fwd(x, return_latents=True)
-        latents = latents if use_latents else None
+        if args.corruption == "projection_vec_ds":
+            x, xn, latents = next(dl)
+            x = x.to(device)
+            xn = xn.to(device)
+        else:
+            x, _, _ = next(dl)
+            x = x.to(device)
+            xn, latents = deconvolver.push_fwd(x, return_latents=True)
+        latents = latents.to(device) if deconvolver.use_latents else None
     res = train_step(x, xn, b, latents, deconvolver, opt, sched, use_cleandata=i<clean_data_step)
     loss = res['loss'].detach().numpy().mean()
     losses.append(loss)
