@@ -1,6 +1,8 @@
 import torch
+import os
 import matplotlib.pyplot as plt
 import seaborn
+import numpy as np
 import pandas as pd
 from utils import grab
 
@@ -209,6 +211,9 @@ def save_fig_checker(idx, clean, corrupted, generated, results_folder, push_fwd_
         fig, axes = plt.subplots(1,3, figsize=(15, 5))
     else:
         fig, axes = plt.subplots(1,4, figsize=(20, 5))
+    clean = grab(clean)
+    corrupted = grab(corrupted)
+    generated = grab(generated)
 
     axes[0].scatter(clean[:,0], clean[:,1], alpha = 0.03, c = c)
     axes[0].set_title(r"Clean samples", fontsize = 18)
@@ -239,6 +244,9 @@ def save_fig_checker(idx, clean, corrupted, generated, results_folder, push_fwd_
 
 
 def save_fig_manifold(idx, clean, corrupted, generated, results_folder, push_fwd_func=None):
+    clean = grab(clean)
+    corrupted = grab(corrupted)
+    generated = grab(generated)
     cmap = plt.get_cmap('Blues')
     colors = [cmap(i) for i in range(16, cmap.N)]
     colors = [(1.0, 1.0, 1.0), *colors]
@@ -254,3 +262,21 @@ def save_fig_manifold(idx, clean, corrupted, generated, results_folder, push_fwd
     pairplot_grid.tight_layout(pad=0.5)
     pairplot_grid.savefig(f'{results_folder}/denoising_{idx}.png', dpi=300)
     plt.close(pairplot_grid.fig)
+
+def save_losses_fig(losses, results_folder):
+    steps = np.arange(len(losses))
+    fig, axs = plt.subplots(1, 2, figsize=(12, 4))
+    axs[0].semilogy(steps, losses, marker='.', linestyle='-', markersize=4, alpha=0.7)
+    axs[0].set_xlabel("Steps")
+    axs[0].set_ylabel("Loss (log scale)")
+    axs[0].set_title("Loss Curve (Semi-Log Y Scale)")
+    axs[0].grid(True, which="both", ls="--", alpha=0.5)
+    axs[1].loglog(steps, losses, marker='.', linestyle='-', markersize=4, alpha=0.7, color='orangered')
+    axs[1].set_xlabel("Steps (log scale)")
+    axs[1].set_ylabel("Loss (log scale)")
+    axs[1].set_title("Loss Curve (Log-Log Scale)")
+    axs[1].grid(True, which="both", ls="--", alpha=0.5)
+    plt.tight_layout()
+    print(os.path.join(results_folder, 'losses.png'))
+    plt.savefig(os.path.join(results_folder, 'losses.png'), dpi=300, bbox_inches='tight')
+    plt.close()
