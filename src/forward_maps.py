@@ -13,6 +13,7 @@ def add_gaussian_noise(epsilon: float) -> callable:
     def fwd(x, return_latents=False, generator=None):
         z = torch.randn(x.shape, generator=generator).to(x.device)
         x_n = x + epsilon * z
+        # x_n = x + z * (torch.rand(x.shape, generator=generator).to(x.device) * epsilon + epsilon/2)
         if return_latents:
             return x_n, z
         else: return x_n

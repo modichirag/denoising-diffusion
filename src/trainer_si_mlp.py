@@ -59,7 +59,8 @@ class TrainerMLP:
             max_grad_norm = 1.,
             num_workers = 1,
             clean_data_steps = -1, # not using clean data
-            save_fig_fn = save_fig
+            save_fig_fn = save_fig,
+            valid_data_plot = None,
     ):
         super().__init__()
 
@@ -80,17 +81,24 @@ class TrainerMLP:
         self.mixed_precision_type = mixed_precision_type
         self.clean_data_steps = clean_data_steps
         self.save_fig_fn = save_fig_fn
+        self.valid_data_plot = valid_data_plot
 
         # dataset and dataloader
-        self.ds = dataset
-        num_workers = cpu_count() if num_workers is None else num_workers
-        if dataset_sampler is not None:
-            dl = DataLoader(self.ds, batch_size = train_batch_size, shuffle = True,
-                            pin_memory = True, num_workers = 0) #cpu_count())
+        if getattr(dataset, '_is_my_custom_distribution_data_loader', False):
+            print("Using DistributionDataLoader")
+            self.dl = dataset
+            self.ds = self.dl.distribution # not used so far
         else:
-            dl = DataLoader(self.ds, batch_size = train_batch_size, sampler = dataset_sampler,
-                            pin_memory = True, num_workers = 0)
-        self.dl = infinite_dataloader(dl)
+            print("Using DataLoader")
+            self.ds = dataset
+            num_workers = cpu_count() if num_workers is None else num_workers
+            if dataset_sampler is not None:
+                dl = DataLoader(self.ds, batch_size = train_batch_size, shuffle = True,
+                                pin_memory = True, num_workers = 0) #cpu_count())
+            else:
+                dl = DataLoader(self.ds, batch_size = train_batch_size, sampler = dataset_sampler,
+                                pin_memory = True, num_workers = 0)
+            self.dl = infinite_dataloader(dl)
 
         # optimizer
         self.opt = Adam(model.parameters(), lr = train_lr, betas = adam_betas)
@@ -148,7 +156,6 @@ class TrainerMLP:
         losses = []
         min_loss = 1e10
         if not bool(os.getenv('SLURM_JOB_ID')): # interactive environment like Jupyter
-            print("Hello from Jupyter")
             miniters = 1
             mininterval = 0.1
             pbar_refresh = True
@@ -156,7 +163,6 @@ class TrainerMLP:
             miniters = 100
             mininterval = 60.0
             pbar_refresh = False
-        print(f"miniters: {miniters}")
         with tqdm(initial = self.step, total = self.train_num_steps, disable = not self.master_process, miniters=miniters, mininterval=mininterval) as pbar:
             while self.step < self.train_num_steps:
                 self.model.train()
@@ -166,8 +172,7 @@ class TrainerMLP:
                     image, corrupted, latents = next(self.dl)
                     image = image.to(self.device)
                     corrupted = corrupted.to(self.device)
-                    latents = latents.to(self.device)
-                    latents = latents if self.deconvolver.use_latents else None
+                    latents = latents.to(self.device) if self.deconvolver.use_latents else None
                     with torch.autocast(device_type=device, dtype=typedict[self.mixed_precision_type]):
                         if self.step < self.clean_data_steps:
                             loss = self.deconvolver.loss_fn_cleandata(self.model, corrupted, image, latents).mean()
@@ -212,11 +217,13 @@ class TrainerMLP:
                             with torch.inference_mode():
                                 milestone = self.step // self.save_and_sample_every
                                 np.save(f"{self.results_folder}/losses", losses)
-                                image, corrupted, latents = next(self.dl)
-                                image = image.to(self.device)
-                                corrupted = corrupted.to(self.device)
-                                latents = latents.to(self.device)
-                                latents = latents if self.deconvolver.use_latents else None
+                                if self.valid_data_plot is None:
+                                    image, corrupted, latents = next(self.dl)
+                                    image = image.to(self.device)
+                                    corrupted = corrupted.to(self.device)
+                                    latents = latents.to(self.device) if self.deconvolver.use_latents else None
+                                else:
+                                    image, corrupted, latents = self.valid_data_plot
                                 clean = self.deconvolver.transport(self.ema.ema_model, corrupted, latents)
                                 self.save_fig_fn(milestone, image, corrupted, clean, self.results_folder)
                                 print(f"Saved model at step {self.step}")
@@ -233,10 +240,13 @@ class TrainerMLP:
                 with torch.inference_mode():
                     milestone = self.step // self.save_and_sample_every
                     np.save(f"{self.results_folder}/losses", losses)
-                    image, corrupted, latents = next(self.dl)
-                    image = image.to(self.device)
-                    corrupted = corrupted.to(self.device)
-                    latents = latents.to(self.device)
+                    if self.valid_data_plot is None:
+                        image, corrupted, latents = next(self.dl)
+                        image = image.to(self.device)
+                        corrupted = corrupted.to(self.device)
+                        latents = latents.to(self.device) if self.deconvolver.use_latents else None
+                    else:
+                        image, corrupted, latents = self.valid_data_plot
                     clean = self.deconvolver.transport(self.ema.ema_model, corrupted, latents)
                     self.save_fig_fn("fin", image, corrupted, clean, self.results_folder)
                     if self.master_process:

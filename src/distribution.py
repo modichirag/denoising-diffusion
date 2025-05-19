@@ -1,17 +1,28 @@
 import torch
+from torch.utils.data import IterableDataset, DataLoader
 from sklearn.datasets import make_moons
 
 class DistributionDataLoader:
-    def __init__(self, distribution, batch_size):
+    _is_my_custom_distribution_data_loader = True
+    def __init__(self, distribution, batch_size, fwd_func=None, use_latents=None):
         self.distribution = distribution
         self.batch_size = batch_size
+        self.fwd_func = fwd_func
+        if self.fwd_func is not None:
+            assert isinstance(use_latents, bool), "use_latents should be a boolean when fwd_func is provided"
+            self.use_latents = use_latents
 
     def __iter__(self):
         return self
 
     def __next__(self):
         samples = self.distribution.sample(self.batch_size)
-        return samples
+        if self.fwd_func is None:
+            return samples
+        else:
+            corrupted, latents = self.fwd_func(samples, return_latents=True)
+            latents = latents if self.use_latents else None
+            return samples, corrupted, latents
 
     def __len__(self):
         return float('inf')  # Infinite length, as it generates samples on-the-fly

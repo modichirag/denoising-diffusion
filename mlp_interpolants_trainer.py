@@ -17,18 +17,17 @@ import forward_maps as fwd_maps
 import argparse
 import matplotlib.pyplot as plt
 
-
 BASEPATH = '/mnt/home/jhan/stoch-int-priors/results'
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print("DEVICE : ", device)
 
 parser = argparse.ArgumentParser(description="")
-parser.add_argument("--dataset", type=str, default="manifold_ds", help="dataset")
-parser.add_argument("--corruption", type=str, default="projection_vec_ds", help="corruption")
+parser.add_argument("--dataset", type=str, default="checker", help="dataset")
+parser.add_argument("--corruption", type=str, default="gaussian_noise", help="corruption")
 parser.add_argument("--corruption_levels", type=float, nargs='+', help="corruption level")
 parser.add_argument("--fc_width", type=int, default=256, help="width of the feedforward network")
 parser.add_argument("--fc_depth", type=int, default=3, help="depth of the feedforward network")
-parser.add_argument("--train_steps", type=int, default=80000, help="number of channels in model")
+parser.add_argument("--train_steps", type=int, default=20000, help="number of channels in model")
 parser.add_argument("--batch_size", type=int, default=4000, help="batch size")
 parser.add_argument("--learning_rate", type=float, default=5e-4, help="learning rate")
 parser.add_argument("--prefix", type=str, default='', help="prefix for folder name")
@@ -42,8 +41,8 @@ parser.add_argument("--resume_count", type=int, default=1, help="continued train
 
 # Parse arguments
 args = parser.parse_args()
-# args = parser.parse_args(['--corruption_levels', '2.0', '0.01',
-#                           '--suffix', 'test'])
+# args = parser.parse_args(['--corruption_levels', '0.4',
+#                           '--suffix', 'mixed_noise'])
 
 print(args)
 train_num_steps = args.train_steps
@@ -90,9 +89,10 @@ if use_follmer:
     deconvolver.loss_fn_cleandata = deconvolver.loss_fn_follmer_cleandata
 if args.dataset in ["checker", "moon"]:
     dim_in = 2
-    dl = DistributionDataLoader(distribution_dict[args.dataset](device=device), batch_size=batch_size)
+    # pass DalaLoader as a dataset, will be checked in the trainer
+    dataset = DistributionDataLoader(distribution_dict[args.dataset](device=device), batch_size=batch_size, fwd_func=fwd_func, use_latents=use_latents)
     save_fig_fn = save_fig_checker
-    clean_data_valid = dl.distribution.sample(20000).to(device)
+    clean_data_valid = dataset.distribution.sample(20000).to(device)
 elif args.dataset == 'gmm':
     dim_in = 2
     nmix = 4
@@ -103,15 +103,15 @@ elif args.dataset == 'gmm':
     mus_target = torch.stack([_compute_mu(i) for i in range(nmix)]).squeeze(1)
     var_target = torch.stack([torch.tensor([0.7, 0.7]) for i in range(nmix)])
     distribution = distribution_dict[args.dataset](mus_target, var_target, device=device, ndim=dim_in)
-    dl = DistributionDataLoader(distribution, batch_size=batch_size)
+    dataset = DistributionDataLoader(distribution, batch_size=batch_size, fwd_func=fwd_func, use_latents=use_latents)
     save_fig_fn = lambda idx, clean, corrupted, generated, results_folder: save_fig_checker(idx, clean, corrupted, generated, results_folder, deconvolver.push_fwd)
-    clean_data_valid = dl.distribution.sample(10000).to(device)
+    clean_data_valid = dataset.distribution.sample(10000).to(device)
 elif args.dataset == "manifold_ds":
     dim_in = 5
     dataset = ManifoldDataset("/mnt/home/jhan/diffusion-priors/experiments/manifold/manifold_dataset.npz", epsilon=corruption_levels[1])
-    dl = infinite_dataloader(DataLoader(dataset, batch_size = batch_size, shuffle = True, pin_memory = True, num_workers = 0, drop_last = True))
+    # dl = infinite_dataloader(DataLoader(dataset, batch_size = batch_size, shuffle = True, pin_memory = True, num_workers = 0, drop_last = True))
     save_fig_fn = save_fig_manifold
-    clean_data_valid = dataset.x_data[:5000].to(device)
+    clean_data_valid = dataset.x_data.to(device)
 else:
     raise ValueError(f"Unknown dataset: {args.dataset}")
 corrupted_valid, latents_valid = deconvolver.push_fwd(clean_data_valid, return_latents=True)
@@ -124,6 +124,7 @@ if args.corruption == "projection_coeff" and dim_in == int(args.corruption_level
     corrupted_valid_plot = torch.linalg.solve(latents_valid, corrupted_valid)
 else:
     corrupted_valid_plot = corrupted_valid
+valid_data_plot = (clean_data_valid, corrupted_valid_plot, latents_valid)
 
 # to update architecture
 # b =  SimpleFeedForward(dim_in, [args.fc_width]*args.fc_depth, latent_dim=latent_dim, use_follmer=use_follmer).to(device)
@@ -142,81 +143,7 @@ trainer = TrainerMLP(model=b,
         results_folder=results_folder,
         clean_data_steps=args.clean_data_steps,
         save_fig_fn=save_fig_fn,
+        valid_data_plot=valid_data_plot,
         )
 
 losses = trainer.train()
-
-
-# %%
-save_fig_fn
-
-# %%
-
-# def train_step(x, xn, b, latents, deconvolver, opt, sched, use_cleandata=False):
-#     if use_cleandata:
-#         loss_val = deconvolver.loss_fn_cleandata(b, xn, x, latents)
-#     else:
-#         loss_val = deconvolver.loss_fn(b, xn, latents)
-#     # perform backprop
-#     loss_val.backward()
-#     opt.step()
-#     sched.step()
-#     opt.zero_grad()
-#     res = {'loss': loss_val.detach().cpu()}
-#     return res
-
-# opt = torch.optim.Adam([{'params': b.parameters(), 'lr': lr} ])
-# sched = torch.optim.lr_scheduler.StepLR(opt, step_size=5000, gamma=0.9)
-
-# losses = []
-# pbar = tqdm(range(train_num_steps))
-# for i in pbar:
-#     b.train()
-#     # TODO: update dl for checker
-#     if args.dataset in ["checker", "moon", "gmm"]:
-#         x = next(dl).to(device)
-#         xn, latents = deconvolver.push_fwd(x, return_latents=True)
-#         latents = latents if use_latents else None
-#     else:
-#         if args.corruption == "projection_vec_ds":
-#             x, xn, latents = next(dl)
-#             x = x.to(device)
-#             xn = xn.to(device)
-#         else:
-#             x, _, _ = next(dl)
-#             x = x.to(device)
-#             xn, latents = deconvolver.push_fwd(x, return_latents=True)
-#         latents = latents.to(device) if deconvolver.use_latents else None
-#     res = train_step(x, xn, b, latents, deconvolver, opt, sched, use_cleandata=i<clean_data_step)
-#     loss = res['loss'].detach().numpy().mean()
-#     losses.append(loss)
-#     pbar.set_description(f'Loss: {loss:.4f}')
-#     if i % save_and_sample_every == 0:
-#         torch.save(b.state_dict(), f"{results_folder}/model.pt")
-#         np.save(f"{results_folder}/losses", losses)
-#         generated = deconvolver.transport(b, corrupted_valid, latents_valid)
-#         save_fig_fn(i, grab(clean_data_valid), grab(corrupted_valid_plot), grab(generated), results_folder, deconvolver.push_fwd)
-#         print(f"Saved model at step {i}")
-
-# torch.save(b.state_dict(), f"{results_folder}/model.pt")
-# np.save(f"{results_folder}/losses", losses)
-# generated = deconvolver.transport(b, corrupted_valid, latents_valid)
-# save_fig_fn('final', grab(clean_data_valid), grab(corrupted_valid_plot), grab(generated), results_folder, deconvolver.push_fwd)
-
-# # Plotting the loss curve
-# # losses = np.load(f"{results_folder}/losses.npy")
-# steps = np.arange(len(losses))
-# fig, axs = plt.subplots(1, 2, figsize=(12, 4))
-# axs[0].semilogy(steps, losses, marker='.', linestyle='-', markersize=4, alpha=0.7)
-# axs[0].set_xlabel("Steps")
-# axs[0].set_ylabel("Loss (log scale)")
-# axs[0].set_title("Loss Curve (Semi-Log Y Scale)")
-# axs[0].grid(True, which="both", ls="--", alpha=0.5)
-# axs[1].loglog(steps, losses, marker='.', linestyle='-', markersize=4, alpha=0.7, color='orangered')
-# axs[1].set_xlabel("Steps (log scale)")
-# axs[1].set_ylabel("Loss (log scale)")
-# axs[1].set_title("Loss Curve (Log-Log Scale)")
-# axs[1].grid(True, which="both", ls="--", alpha=0.5)
-# plt.tight_layout()
-# plt.savefig(os.path.join(results_folder, 'losses.png'), dpi=300, bbox_inches='tight')
-# plt.show()
