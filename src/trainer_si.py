@@ -41,6 +41,7 @@ class Trainer:
             model, 
             deconvolver,
             dataset,
+            optimizer = None,
             dataset_sampler = None,
             *,
             train_batch_size = 16,
@@ -56,7 +57,9 @@ class Trainer:
             results_folder = './results',
             mixed_precision_type = 'fp32',
             max_grad_norm = 1.,
-            num_workers = 1
+            num_workers = 1,
+            milestone = None
+
     ):
         super().__init__()
 
@@ -87,7 +90,10 @@ class Trainer:
         self.dl = infinite_dataloader(dl)
 
         # optimizer
-        self.opt = Adam(model.parameters(), lr = train_lr, betas = adam_betas)
+        if optimizer is not None:
+            self.opt = optimizer
+        else:
+            self.opt = Adam(model.parameters(), lr = train_lr, betas = adam_betas)
         if lr_scheduler is not None:
             num_warmup_steps = int(warmup_fraction * train_num_steps) 
             self.lr_scheduler = get_cosine_schedule_with_warmup(
@@ -108,6 +114,9 @@ class Trainer:
 
         # step counter state
         self.step = 0
+        if milestone is not None:
+            print("Milestone is not None. Will be loading model")
+            self.load(milestone)
 
 
     def save(self, milestone):
@@ -116,31 +125,55 @@ class Trainer:
 
         data = {
             'step': self.step,
-            'model': self.model.state_dict(),
+            # 'model': self.model.state_dict(),
             'opt': self.opt.state_dict(),
             'ema': self.ema.state_dict(),
-            'ema_model': self.ema.ema_model.state_dict(),
-        }
+            # 'ema_model': self.ema.ema_model.state_dict(),
+        }    
+        if hasattr(self.model, "_orig_mod"):
+            data['model'] = self.model._orig_mod.state_dict()
+        else:
+            data['model'] = self.model.state_dict()
+        if hasattr(self.ema.ema_model, "_orig_mod"):
+            data['ema_model'] = self.ema.ema_model._orig_mod.state_dict()
+        else:
+            data['ema_model'] = self.ema.ema_model.state_dict()
+           
+
+        
+        if self.lr_scheduler is not None:
+            data['scheduler'] = self.lr_scheduler.state_dict()
 
         torch.save(data, str(self.results_folder / f'model-{milestone}.pt'))
 
     def load(self, milestone):
         device = self.device
-        data = torch.load(str(self.results_folder / f'model-{milestone}.pt'), \
+        try:
+            data = torch.load(milestone, \
                           map_location=device, weights_only=True)
+            print(f"Loading model from {milestone}")
+        except Exception as e:
+            data = torch.load(str(self.results_folder / f'model-{milestone}.pt'), \
+                          map_location=device, weights_only=True)
+            print(f"Loading model from {str(self.results_folder / f'model-{milestone}.pt')}")
         self.model.load_state_dict(data['model'])
         self.step = data['step']
         self.opt.load_state_dict(data['opt'])
+        if ('scheduler' in data.keys()) & (self.lr_scheduler is not None):
+            self.lr_scheduler.load_state_dict(data['scheduler'])
+
         if self.master_process:
             self.ema.load_state_dict(data["ema"])
         if 'version' in data:
             print(f"loading from version {data['version']}")
+        print("Successfully loaded model")
 
-            
-    def train(self):
+
+    def train(self, loss_threshold=10.0, window=11):
         device = self.device
         losses = []
         min_loss = 1e10
+        recent_losses = []
         
         with tqdm(initial = self.step, total = self.train_num_steps, disable = not self.master_process) as pbar:
 
@@ -177,33 +210,54 @@ class Trainer:
                     self.lr_scheduler.step()
                 torch.cuda.synchronize()
                 
-                self.step += 1
-                if self.master_process:
-                    self.ema.update()
 
-                    if self.step != 0 and divisible_by(self.step, self.save_and_sample_every):
+                # If loss spikes, reset it
+                reset_model = False
+                recent_losses.append(total_loss)
+                if len(recent_losses) > window:
+                    recent_losses.pop(0)
+                if len(recent_losses) == window:
+                    mean_loss = sum(recent_losses[:-1]) / (window-1)
+                    if total_loss > loss_threshold * mean_loss or not torch.isfinite(loss):
+                        print("Loss spike detected. Resetting model and optimizer.")
+                        # Reset model and optimizer
+                        self.load("best")
+                        recent_losses.clear()
+                        self.opt.zero_grad()
+                        reset_model = True
+
+                if not reset_model:
+                    self.step += 1
+                    if self.master_process:
+                        self.ema.update()
+
                         if self.step % 5000 == 0:
                             self.save(self.step)
-                        self.save("latest")
-                        if losses[-1] < min_loss:
-                            min_loss = losses[-1]
-                            self.save("best")
-                            print(f"New best model at step {self.step} with loss {min_loss:.4f}")
-                        self.ema.ema_model.eval()
+                        if self.step != 0 and divisible_by(self.step, self.save_and_sample_every):
+                            self.save("latest")
+                            if losses[-1] < min_loss:
+                                min_loss = losses[-1]
+                                self.save("best")
+                                print(f"New best model at step {self.step} with loss {min_loss:.4f}")
+                            self.ema.ema_model.eval()
 
-                        with torch.autocast(device_type=device, dtype=typedict[self.mixed_precision_type]):
-                            with torch.inference_mode():
-                                milestone = self.step // self.save_and_sample_every
-                                np.save(f"{self.results_folder}/losses", losses)
-                                image, corrupted, latents = next(self.dl)
-                                image = image.to(self.device)
-                                corrupted = corrupted.to(self.device)
-                                latents = latents.to(self.device)
-                                latents = latents if self.deconvolver.use_latents else None
-                                clean = self.deconvolver.transport(self.ema.ema_model, corrupted, latents)
-                                iutils.save_fig(milestone, image, corrupted, clean, self.results_folder)
-                                print(f"Saved model at step {self.step}")
-            
+                            with torch.autocast(device_type=device, dtype=typedict[self.mixed_precision_type]):
+                                with torch.inference_mode():
+                                    milestone = self.step // self.save_and_sample_every
+                                    np.save(f"{self.results_folder}/losses", losses)
+                                    image, corrupted, latents = next(self.dl)
+                                    image = image.to(self.device)
+                                    corrupted = corrupted.to(self.device)
+                                    latents = latents.to(self.device)
+                                    latents = latents if self.deconvolver.use_latents else None
+                                    clean = self.deconvolver.transport(self.ema.ema_model, corrupted, latents)
+                                    try:
+                                        iutils.save_fig(milestone, image, corrupted, clean, self.results_folder)
+                                    except Exception as e:
+                                        print("Exception in saving image")
+                                        print(e)
+                                        print(f"Saved model at step {self.step}")
+                
                 pbar.update(1)
                 torch.cuda.synchronize()
                 
