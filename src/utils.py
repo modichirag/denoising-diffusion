@@ -54,11 +54,14 @@ def normalize_to_neg_one_to_one(img):
 def unnormalize_to_zero_to_one(t):
     return (t + 1) * 0.5
 
-def count_parameters(model):
+def count_parameters(model, in_millions=True):
     # Total parameters
     total_params = sum(p.numel() for p in model.parameters())
     # Trainable parameters
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    if in_millions:
+        total_params /= 1e6
+        trainable_params /= 1e6
     return total_params, trainable_params
 
 def grab(var):
@@ -75,3 +78,9 @@ def infinite_dataloader(dl):
         for batch in dl:
             yield batch
         epoch += 1
+
+def remove_orig_mod_prefix(state_dict):
+    return {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+
+def is_compiled_model(model):
+    return hasattr(model, "_orig_mod")
