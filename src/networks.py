@@ -10,6 +10,7 @@
 
 import numpy as np
 import torch
+from torch import nn
 from torch_utils import persistence
 from torch.nn.functional import silu
 
@@ -40,6 +41,33 @@ class Linear(torch.nn.Module):
         x = x @ self.weight.to(x.dtype).t()
         if self.bias is not None:
             x = x.add_(self.bias.to(x.dtype))
+        return x
+
+
+class LinearResidualBlock(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.block = nn.Sequential(
+            Linear(dim, dim),
+            nn.ReLU(),
+            Linear(dim, dim),
+        )
+    
+    def forward(self, x):
+        return x + self.block(x)  # residual connection
+
+
+class MLPResNet(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, depth):
+        super().__init__()
+        self.input_proj = Linear(input_dim, hidden_dim)
+        self.blocks = nn.Sequential(*[LinearResidualBlock(hidden_dim) for _ in range(depth)])
+        self.output_proj = Linear(hidden_dim, output_dim)
+
+    def forward(self, x):
+        x = self.input_proj(x)
+        x = self.blocks(x)
+        x = self.output_proj(x)
         return x
 
 #----------------------------------------------------------------------------
@@ -512,7 +540,8 @@ class ConditionalDhariwalUNet(torch.nn.Module): #Difference in handling label_di
         dropout             = 0.10,         # List of resolutions with self-attention.
         label_dropout       = 0,            # Dropout probability of class labels for classifier-free guidance.
         gated               = False,         # Use gated convolutions? 
-        latent_channels     = 8 
+        latent_channels     = 8,
+        max_pos_embedding = 10_000,
     ):
         super().__init__()
         self.label_dropout = label_dropout
@@ -522,7 +551,7 @@ class ConditionalDhariwalUNet(torch.nn.Module): #Difference in handling label_di
         block_kwargs = dict(emb_channels=emb_channels, channels_per_head=64, dropout=dropout, init=init, init_zero=init_zero, gated=gated)
 
         # Mapping.
-        self.map_noise = PositionalEmbedding(num_channels=model_channels)
+        self.map_noise = PositionalEmbedding(num_channels=model_channels, max_positions=max_pos_embedding)
         self.map_augment = Linear(in_features=augment_dim, out_features=model_channels, bias=False, **init_zero) if augment_dim else None
         self.map_layer0 = Linear(in_features=model_channels, out_features=emb_channels, **init)
         self.map_layer1 = Linear(in_features=emb_channels, out_features=emb_channels, **init)
@@ -532,6 +561,7 @@ class ConditionalDhariwalUNet(torch.nn.Module): #Difference in handling label_di
             latent_in_channels = 0
         elif len(latent_dim) == 1:
             latent_dim = int(latent_dim[0])
+            print("1 D latents. Use linear to process and then embed")
             self.map_latents = torch.nn.Sequential(
                 Linear(in_features=latent_dim, out_features=emb_channels, bias=False, init_mode='kaiming_normal', init_weight=np.sqrt(latent_dim)),
                 torch.nn.SiLU(),
@@ -543,10 +573,13 @@ class ConditionalDhariwalUNet(torch.nn.Module): #Difference in handling label_di
         elif len(latent_dim) in [2, 3]:
             if len(latent_dim) == 3:
                 C, H, W = latent_dim
-            if len(latent_dim) == 2:
+            if len(latent_dim) == 2:    
                 H, W = latent_dim
                 C = 1
+            print(f"2/3D latent with {C} channels")
+            print("Use U-net to process and then concatenate")            
             latent_in_channels = C
+            latent_channels = max(latent_in_channels, latent_channels)
             self.map_latents = torch.nn.Sequential(
                 Conv2d(in_channels=C, out_channels=latent_channels, kernel=3, gated=gated, **init),
                 UNetBlock(in_channels=latent_channels, out_channels=latent_channels, emb_channels=latent_channels, \
