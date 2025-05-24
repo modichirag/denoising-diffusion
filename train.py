@@ -4,8 +4,8 @@ import  matplotlib.pyplot as plt
 import sys, os
 sys.path.append('./src/')
 from networks import EDMPrecond
-from loss_functions import EDMLoss, VELoss, VPLoss
-from custom_datasets import dataset_dict, ImagesOnly
+from loss_functions import VELoss
+from custom_datasets import dataset_dict, ImagesOnly, CombinedNumpyDataset
 from torch.utils.data import DataLoader, Dataset
 from trainer import Trainer
 from utils import count_parameters
@@ -25,12 +25,17 @@ args = parser.parse_args()
 print(args)
 results_folder = f"{BASEPATH}/{args.folder}/"
 os.makedirs(results_folder, exist_ok=True)
-dataset, D, nc = dataset_dict[args.dataset]
+try:
+    dataset, D, nc = dataset_dict[args.dataset]
+except:
+    if 'cifar10' in args.dataset:
+        D, nc = 32, 3
+        dataset = CombinedNumpyDataset(args.dataset)
+
 image_dataset = ImagesOnly(dataset)
 model_channels = args.channels #192
 train_num_steps = args.train_steps
 save_and_sample_every = int(train_num_steps//10)
-sigma_min = args.sigma_min
 
 # Model
 print("Setup model")
