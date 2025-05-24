@@ -1,6 +1,7 @@
 import sys, os
 import h5py
 import torch
+import torch.nn as nn
 import numpy as np
 import math
 
@@ -98,6 +99,56 @@ def make_mask(n, w, r, generator = None, device = None, mode='same_rate') -> tor
 #     return mask
 
 
+# def mri_subsampling(r, epsilon, downscale_factor=4):
+#     """
+#     Randomly subsample the k-space data of an image.
+#     Args:
+#         r: downsampling factor (controls the band-stop width)
+#         epsilon: noise level
+#     """
+#     from mri_data import make_mask, fourier_to_pix, pix_to_fourier
+#     downsampler = nn.PixelUnshuffle(downscale_factor=downscale_factor)
+#     upsampler = nn.PixelShuffle(upscale_factor=downscale_factor)
+ 
+#     def fwd(img, return_latents=False, generator=None):
+#         was_3d = (img.dim() == 3)
+#         if was_3d:
+#             img = img.unsqueeze(0)
+#         if img.shape[1] == 2 : # already in Fourier space
+#             pass 
+#         elif img.shape[1] == 16: # convert to Fourier space
+#             img = upsampler(img)  # shape: [1, 1, 320, 320]
+#             img = img.permute(0, 2, 3, 1).contiguous()  # (N, H, W, C)
+#             img = pix_to_fourier(img, channel_first=True)  # (N, 320, 320, 2)
+
+#         # move channel last
+#         # img = img.permute(0, 2, 3, 1).contiguous()  # (N, H, W, C)
+#         mask = make_mask(n=img.shape[0], r=r, generator=generator).to(img.device) # (N, 1, 320, 1)
+#         y = img * mask
+#         z = torch.randn(y.shape, generator=generator).to(img.device) 
+#         y = y + z*epsilon
+#         y = fourier_to_pix(y)
+#         # move channel first
+#         y = y.permute(0, 3, 1, 2).contiguous()  # (N, C, H, W)
+#         y = downsampler(y)  # shape: [1, 16, 80, 80]
+
+#         if was_3d:
+#             y = y.squeeze(0)
+        
+#         if return_latents:
+#             mask = mask.squeeze(3).squeeze(1).to(float)
+#             # mask = mask.expand(-1, 320, -1, -1).to(float)  # shape [N, 1, D, D]
+#             # mask = mask.permute(0, 3, 1, 2).contiguous()  # (N, C, H, W)
+#             # mask = mask.expand(-1, -1, -1, 320).to(float)  # shape [N, 1, D, D]
+#             # mask = mask.repeat(1, img.shape[0], 1, 320).to(float)  # shape [N, 1, D, D]
+#             if was_3d:
+#                 mask = mask.squeeze(0)
+#             return y, mask
+#         else:
+#             return y
+
+#     return fwd
+
 def make_slices(f):
     with h5py.File(f, "r") as mri:
        slices = mri['reconstruction_rss'][10:41]
@@ -125,6 +176,173 @@ def fourier_to_pix(y):
         y = y.permute(0, 2, 3, 1)
     slices = (ifft2c(real2complex(y))).real
     return slices
+
+
+
+def mri_subsampling(r, epsilon, downscale_factor=4, mode='same_rate'):
+    """
+    Randomly subsample the k-space data of an image.
+    Expects data in Fourier space (N, 2, D, D) or scrambled pixel space (N, s^2, D/s, D/s).
+    Args:
+        r: downsampling factor (controls the band-stop width)
+        epsilon: noise level
+    """
+    from mri_data import make_mask, fourier_to_pix, pix_to_fourier
+    downsampler = nn.PixelUnshuffle(downscale_factor=downscale_factor)
+    upsampler = nn.PixelShuffle(upscale_factor=downscale_factor)
+ 
+    def fwd(img, return_latents=False, generator=None):
+        was_3d = (img.dim() == 3)
+        if was_3d:
+            img = img.unsqueeze(0)
+        if img.shape[1] == 2 : # already in Fourier space
+            D = img.shape[2]
+        elif img.shape[1] == (downscale_factor**2): # convert to Fourier space
+            img = upsampler(img)  # shape: [N, 1, D, D]
+            assert img.shape[1] == 1
+            D = img.shape[2]
+            img = img.permute(0, 2, 3, 1).contiguous()  # (N, H, W, C)
+            img = pix_to_fourier(img, channel_first=True)  # (N, 2, D, D)
+
+        # move channel last
+        mask = make_mask(n=img.shape[0], w=D,  \
+                        r=r, generator=generator, mode=mode ).to(img.device) # (N, 1, D, 1)
+        # print(img.shape, mask.shape)
+        y = img * mask
+        z = torch.randn(y.shape, generator=generator).to(img.device) 
+        y = y + z*epsilon
+        y = fourier_to_pix(y)
+        # move channel first
+        y = y.permute(0, 3, 1, 2).contiguous()  # (N, C, H, W)
+        y = downsampler(y)  # shape: [1, 16, 80, 80]
+
+        if was_3d:
+            y = y.squeeze(0)
+        
+        if return_latents:
+            mask = mask.expand(-1, -1, -1, D)  # if mask is 1D
+            # print(y.shape, mask.shape)
+            mask = downsampler(mask).float()
+            if was_3d:
+                mask = mask.squeeze(0)
+            return y, mask
+        else:
+            return y
+
+    return fwd
+
+
+
+def mri_subsampling2(r, epsilon, downscale_factor=4, mode='same_rate', fmri_mean=None, fmri_std=None):
+    """
+    Randomly subsample the k-space data of an image.
+    Excects image in fourier space, stadard or scrambled.
+    Args:
+        r: downsampling factor (controls the band-stop width)
+        epsilon: noise level
+    """
+    from mri_data import make_mask, fourier_to_pix, pix_to_fourier
+    downsampler = nn.PixelUnshuffle(downscale_factor=downscale_factor)
+    upsampler = nn.PixelShuffle(upscale_factor=downscale_factor)
+    mean = np.load("/mnt/ceph/users/cmodi/ML_data/fastMRI/fourier-sub-mean.npy")
+    std = np.load("/mnt/ceph/users/cmodi/ML_data/fastMRI/fourier-sub-std.npy")
+    # fmri_mean = torch.from_numpy(mean).to(torch.float32)
+    # fmri_std = torch.from_numpy(std).to(torch.float32)
+
+    def fwd(img, return_latents=False, generator=None):
+        was_3d = (img.dim() == 3)
+        if was_3d:
+            img = img.unsqueeze(0)
+        if img.shape[1] == 2 : # already in Fourier space
+            D = img.shape[2]
+        elif img.shape[1] == 2*(downscale_factor**2): # convert to Fourier space
+            img = upsampler(img)  # shape: [N, 2, D, D]
+            assert img.shape[1] == 2
+            D = img.shape[2]
+
+        if fmri_mean is not None:
+            img = img * fmri_std.to(img.device) + fmri_mean.to(img.device)
+        # move channel last
+        mask = make_mask(n=img.shape[0], w=D, r=r, generator=generator, mode=mode).to(img.device) # (N, 1, 320, 1)
+        mask = mask.expand(-1, -1, -1, D)#.to(float)  # shape [N, 1, D, D]
+        # print("img mask shape", img.shape, mask.shape)
+        y = img * mask
+        z = torch.randn(y.shape, generator=generator).to(img.device) 
+        y = y + z*epsilon
+                
+        if fmri_mean is not None:
+            y = (y  - fmri_mean.to(img.device))/ fmri_std.to(img.device)
+        y = downsampler(y)  # shape: [N, 2*s^2, D, D]
+        # print("y shape",  y.shape)        
+
+        if was_3d:
+            y = y.squeeze(0)
+        
+        if return_latents:
+            # mask = mask.expand(-1, -1, -1, D).to(float)  # shape [N, 1, D, D]
+            mask = downsampler(mask).to(float)  # shape [N, 1, D, D]
+            # print(y.shape, mask.shape)
+            if was_3d:
+                mask = mask.squeeze(0)
+            return y, mask
+        else:
+            return y
+
+    return fwd
+
+def mri_subsampling3(r, epsilon, downscale_factor=4, mode='same_rate'):
+    """
+    Randomly subsample the k-space data of an image.
+    Expects data in Fourier space (N, 2, D, D) or scrambled pixel space (N, s^2, D/s, D/s).
+    Same as mri_subsampling, but returns image as latents.
+    Args:
+        r: downsampling factor (controls the band-stop width)
+        epsilon: noise level
+    """
+    from mri_data import make_mask, fourier_to_pix, pix_to_fourier
+    downsampler = nn.PixelUnshuffle(downscale_factor=downscale_factor)
+    upsampler = nn.PixelShuffle(upscale_factor=downscale_factor)
+ 
+    def fwd(img, return_latents=False, generator=None):
+        was_3d = (img.dim() == 3)
+        if was_3d:
+            img = img.unsqueeze(0)
+        if img.shape[1] == 2 : # already in Fourier space
+            D = img.shape[2]
+        elif img.shape[1] == (downscale_factor**2): # convert to Fourier space
+            img = upsampler(img)  # shape: [N, 1, D, D]
+            assert img.shape[1] == 1
+            D = img.shape[2]
+            img = img.permute(0, 2, 3, 1).contiguous()  # (N, H, W, C)
+            img = pix_to_fourier(img, channel_first=True)  # (N, 2, D, D)
+
+        # move channel last
+        mask = make_mask(n=img.shape[0], w=D,  \
+                        r=r, generator=generator, mode=mode).to(img.device) # (N, 1, D, 1)
+        # print(img.shape, mask.shape)
+        y = img * mask
+        z = torch.randn(y.shape, generator=generator).to(img.device) 
+        y = y + z*epsilon
+        y = fourier_to_pix(y)
+        # move channel first
+        y = y.permute(0, 3, 1, 2).contiguous()  # (N, C, H, W)
+        y = downsampler(y)  # shape: [1, 16, 80, 80]
+
+        if was_3d:
+            y = y.squeeze(0)
+        
+        if return_latents:
+            mask = mask.expand(-1, -1, -1, D)  # if mask is 1D
+            # print(y.shape, mask.shape)
+            mask = downsampler(mask).float()
+            if was_3d:
+                mask = mask.squeeze(0)
+            return y, y
+        else:
+            return y
+
+    return fwd
+
 
 
 if __name__=="__main__":

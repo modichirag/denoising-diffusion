@@ -1,5 +1,6 @@
 import math
 import copy
+import numpy as np
 from pathlib import Path
 from random import random
 from functools import partial
@@ -7,14 +8,11 @@ from collections import namedtuple
 from multiprocessing import cpu_count
 
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from torch.optim import Adam
-from torchvision import transforms as T, utils
 from torchvision import utils as tv_utils
 
-from PIL import Image
 from tqdm.auto import tqdm
 from ema_pytorch import EMA
 
@@ -130,13 +128,6 @@ class Trainer:
 
         if self.calculate_fid:
             from fid_evaluation import FIDEvaluation
-
-            # if not is_ddim_sampling:
-            #     self.accelerator.print(
-            #         "WARNING: Robust FID computation requires a lot of generated samples and can therefore be very time consuming."\
-            #         "Consider using DDIM sampling to save time."
-            #     )
-
             self.fid_scorer = FIDEvaluation(
                 batch_size=self.batch_size,
                 dl=self.dl,
@@ -239,6 +230,7 @@ class Trainer:
                         with self.accelerator.autocast():
                             with torch.inference_mode():
                                 milestone = self.step // self.save_and_sample_every
+                                np.save(f"{self.results_folder}/losses", losses)
                                 batches = num_to_groups(self.num_samples, self.batch_size)
                                 #all_images_list = list(map(lambda n: self.ema.ema_model.sample(batch_size=n), batches))
                                 all_images_list = []
@@ -257,6 +249,8 @@ class Trainer:
                             fids.append(fid_score)
                             accelerator.print(f'fid_score: {fid_score}')
 
+                        if self.step % 10_000 == 0:
+                            self.save(self.step)
                         if self.save_best_and_latest_only:
                             if self.best_fid > fid_score:
                                 self.best_fid = fid_score

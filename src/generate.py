@@ -91,6 +91,7 @@ def edm_sampler(net, latents, class_labels=None, scale_latents=True,
     else:
         return x_next
 
+
 def tweedie_sampler(net, x, sigma,  class_labels=None):
     sigma = net.round_sigma(sigma).to(x.device) 
     denoised = net(x, sigma, class_labels).to(torch.float64)
