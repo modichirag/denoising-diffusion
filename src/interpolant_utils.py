@@ -5,6 +5,7 @@ import seaborn
 import numpy as np
 import pandas as pd
 from utils import grab
+from networks import MLPResNet, PositionalEmbedding
 
 class VelocityField(torch.nn.Module):
 
@@ -18,6 +19,38 @@ class VelocityField(torch.nn.Module):
 
     def forward(self, x, t, latents=None):
         return self.model(x, t, latents=latents)
+
+class MLPVelocityField(torch.nn.Module):
+    # a neural network that takes x in R^d and t in [0, 1] and outputs a a value in R^d
+
+    def __init__(self, d,  hidden_dim=512, depth=4, activation=torch.nn.SiLU, t_freq=64, latent_dim=None):
+        super(MLPVelocityField, self).__init__()
+
+        self.t_freq = t_freq
+        input_dim =  d + self.t_freq  
+        if latent_dim is not None: 
+            input_dim += self.t_freq
+        output_dim = d
+        if latent_dim is not None:
+            self.latent_net = MLPResNet(latent_dim[0], hidden_dim, t_freq, 2)
+        else:
+            self.latent_net = None
+        self.net = MLPResNet(input_dim, hidden_dim, output_dim, depth)        
+        self.time_encoding = PositionalEmbedding(t_freq, max_positions=2)
+        
+    def _single_forward(self, x, t, latents=None):  
+        # t_encoded = fourier_encode(t, self.t_freq)  # [B, 2*n_freqs]
+        t_encoded = self.time_encoding(t.unsqueeze(0)).squeeze(0)  # [B, 2*n_freqs]
+        x_cond = torch.cat([x, t_encoded])
+        if self.latent_net is not None: 
+            latents = self.latent_net(latents)
+            x_cond = torch.cat([x_cond, latents])
+        return self.net(x_cond)
+    
+    def forward(self, x, t, latents=None):
+        if latents is None:
+            latents = t*0.
+        return torch.vmap(self._single_forward, in_dims=(0,0,0), out_dims=(0))(x, t, latents)
 
 
 class DeconvolvingInterpolant(torch.nn.Module):
@@ -186,13 +219,40 @@ class DeconvolvingInterpolant(torch.nn.Module):
 
 def save_fig(idx, image, corrupted, clean, results_folder, epsilon=""):
     to_show = [image, corrupted, clean]
+    if image.shape[1] != corrupted.shape[1]:
+        save_mri_fig(idx, image, corrupted, clean, results_folder, epsilon)
+    else:
+        fig, axar = plt.subplots(len(to_show), 8, figsize=(8, 3), sharex=True, sharey=True)
+        vmax, vmin = image.max()*1.1, image.min()*0.5
+        for i in range(len(to_show)):
+            for j in range(8):
+                ax = axar[i, j]
+                im = ax.imshow(grab(to_show[i][j]).transpose(1, 2, 0), vmax=vmax, vmin=vmin)
+        axar[0, 0].set_ylabel('Original\nImage')
+        axar[1, 0].set_ylabel(f'Corrupted\n$\sigma ${epsilon}')
+        axar[2, 0].set_ylabel(f'Clean')
+        for axis in axar.flatten():
+            axis.set_xticks([])
+            axis.set_yticks([])
+        plt.subplots_adjust(wspace=0.0, hspace=0.0)  # Reduce spacing
+        # plt.tight_layout()
+        plt.savefig(f'{results_folder}/denoising_{idx}.png', dpi=300)
+        plt.close()
+
+def save_mri_fig(idx, image, corrupted, clean, results_folder, epsilon=""):
+    
+    from mri_data import fourier_to_pix
+    shuffler = torch.nn.PixelShuffle(4)
+    to_show = [fourier_to_pix(image), \
+               shuffler(corrupted).permute(0, 2, 3, 1), \
+            shuffler(clean).permute(0, 2, 3, 1)]
 
     fig, axar = plt.subplots(len(to_show), 8, figsize=(8, 3), sharex=True, sharey=True)
-    vmax, vmin = image.max()*1.1, image.min()*0.5
+    vmax, vmin = None, None
     for i in range(len(to_show)):
         for j in range(8):
             ax = axar[i, j]
-            im = ax.imshow(grab(to_show[i][j]).transpose(1, 2, 0), vmax=vmax, vmin=vmin)
+            im = ax.imshow(grab(to_show[i][j]), vmax=vmax, vmin=vmin)
     axar[0, 0].set_ylabel('Original\nImage')
     axar[1, 0].set_ylabel(f'Corrupted\n$\sigma ${epsilon}')
     axar[2, 0].set_ylabel(f'Clean')
