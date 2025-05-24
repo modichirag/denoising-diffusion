@@ -9,10 +9,10 @@ import numpy as np
 sys.path.append('./src/')
 from networks import ConditionalDhariwalUNet
 from custom_datasets import dataset_dict, ImagesOnly, cifar10_inverse_transforms
-from interpolant_utils import DeconvolvingInterpolant, VelocityField
+from interpolant_utils import DeconvolvingInterpolant
 import forward_maps as fwd_maps
 from fid_evaluation import FIDEvaluation, calculate_frechet_distance
-from utils import infinite_dataloader, grab, num_to_groups
+from utils import infinite_dataloader,  num_to_groups, remove_orig_mod_prefix
 from tqdm.auto import tqdm
 
 
@@ -21,11 +21,12 @@ print("DEVICE : ", device)
 
 # Create an ArgumentParser object
 parser = argparse.ArgumentParser(description="")
+parser.add_argument("--model", type=str, default="best", help="which model to load")
 parser.add_argument("--dataset", type=str, help="dataset")
 parser.add_argument("--corruption", type=str, help="corruption")
 parser.add_argument("--corruption_levels", type=float, nargs='+', help="corruption level")
-parser.add_argument("--channels", type=int, default=32, help="number of channels in model")
-parser.add_argument("--n_samples", type=int, default=10_000, help="Samples to evalaute FID")
+parser.add_argument("--channels", type=int, default=64, help="number of channels in model")
+parser.add_argument("--n_samples", type=int, default=50_000, help="Samples to evalaute FID")
 parser.add_argument("--batch_size", type=int, default=128, help="batch size")
 parser.add_argument("--prefix", type=str, default='', help="prefix for folder name")
 parser.add_argument("--suffix", type=str, default='', help="suffix for folder name")
@@ -33,6 +34,7 @@ parser.add_argument("--subfolder", type=str, default='', help="subfolder for fol
 parser.add_argument("--gated", action='store_true', help="gated convolution if provided, else not")
 parser.add_argument("--ode_steps", type=int, default=80, help="number of steps for ODE sampling")
 parser.add_argument("--multiview", action='store_true', help="change corruption every epoch if provided, else not")
+parser.add_argument("--max_pos_embedding", type=int, default=2, help="number of resamplings")
 args = parser.parse_args()
 print(args)
 if args.multiview:
@@ -72,35 +74,26 @@ use_latents, latent_dim = fwd_maps.parse_latents(corruption, D)
 if use_latents:
     print("Will use latents of dimension: ", latent_dim)
 n = int(args.n_samples/1e3)
-save_name = f"{results_folder}/fid_{n}k_{args.ode_steps}steps.json"
+save_name = f"{results_folder}/fid_{n}k_{args.ode_steps}steps_{args.model}.json"
 print(f"Results will be saved in file: {save_name}")
 
-# Load model
+
 deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, n_steps=args.ode_steps).to(device)
+b = ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim, model_channels=args.channels, gated=gated, \
+                            max_pos_embedding=args.max_pos_embedding).to(device)
+ema_b = EMA(b)
+data = torch.load(f'{folder}/model-{args.model}.pt', weights_only=True)
 try:
-    b = ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim, model_channels=args.channels, gated=gated)
-    try:
-        b.load_state_dict(torch.load(f'{folder}/model.pt', weights_only=True))
-        b.to(device)
-    except:
-        data = torch.load(f'{folder}/model-latest.pt', weights_only=True)
-        b.load_state_dict(data['model'])
-        b.to(device)
-        ema_b = EMA(b)
-        ema_b.load_state_dict(data['ema'])
-        b = ema_b.ema_model
-except:
-    b = VelocityField(ConditionalDhariwalUNet(D, nc, nc, model_channels=args.channels, gated=gated))
-    try:
-        b.load_state_dict(torch.load(f'{folder}/model.pt', weights_only=True))
-        b.to(device)
-    except:
-        data = torch.load(f'{folder}/model-latest.pt', weights_only=True)
-        b.load_state_dict(data['model'])
-        b.to(device)
-        ema_b = EMA(b)
-        ema_b.load_state_dict(data['ema'])
-        b = ema_b.ema_model
+    b.load_state_dict(data['model'])
+    ema_b.load_state_dict(data['ema'])
+except Exception as e :
+    print("Saved compiled model. Trying to load without compilation")
+    cleaned_ckpt = remove_orig_mod_prefix(data['model'])
+    b.load_state_dict(cleaned_ckpt)
+    cleaned_ckpt = remove_orig_mod_prefix(data['ema'])
+    ema_b.load_state_dict(cleaned_ckpt)    
+b = ema_b.ema_model
+
 
 
 fid_scorer = FIDEvaluation(
@@ -123,7 +116,6 @@ def get_cleaned_samples():
     latents = latents if use_latents else None
     clean = deconvolver.transport(b, corrupted, latents)
     return clean
-
 
 batches = num_to_groups(fid_scorer.n_samples, fid_scorer.batch_size)
 stacked_fake_features = []
