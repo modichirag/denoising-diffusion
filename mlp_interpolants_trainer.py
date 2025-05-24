@@ -56,8 +56,9 @@ corruption = args.corruption # to fix
 corruption_levels = args.corruption_levels
 if args.corruption == "projection_vec_ds":
     assert args.dataset == "manifold_ds", "For projection_vec_ds, dataset should be manifold_ds"
-    assert corruption_levels[1] == 0.01, "For projection_vec_ds, corruption_levels[1] should be 0.01"
-    A_dataset = Manifold_A_Dataset("/mnt/home/jhan/diffusion-priors/experiments/manifold/manifold_dataset.npz")
+    dataset_path = f"/mnt/home/jhan/diffusion-priors/experiments/manifold/manifold_dataset_eps{corruption_levels[1]:0.2f}.npz"
+    assert os.path.exists(dataset_path), f"Dataset path {dataset_path} does not exist"
+    A_dataset = Manifold_A_Dataset(dataset_path)
     dl_A = DataLoader(A_dataset, batch_size = batch_size, shuffle = True, pin_memory = True, num_workers = 1, drop_last = True)
     fwd_func = fwd_maps.corruption_dict[corruption](dl_A)
 else:
@@ -108,7 +109,9 @@ elif args.dataset == 'gmm':
     clean_data_valid = dataset.distribution.sample(10000).to(device)
 elif args.dataset == "manifold_ds":
     dim_in = 5
-    dataset = ManifoldDataset("/mnt/home/jhan/diffusion-priors/experiments/manifold/manifold_dataset.npz", epsilon=corruption_levels[1])
+    dataset_path = f"/mnt/home/jhan/diffusion-priors/experiments/manifold/manifold_dataset_eps{corruption_levels[1]:0.2f}.npz"
+    assert os.path.exists(dataset_path), f"Dataset path {dataset_path} does not exist"
+    dataset = ManifoldDataset(dataset_path, epsilon=corruption_levels[1])
     # dl = infinite_dataloader(DataLoader(dataset, batch_size = batch_size, shuffle = True, pin_memory = True, num_workers = 0, drop_last = True))
     save_fig_fn = save_fig_manifold
     clean_data_valid = dataset.x_data.to(device)
