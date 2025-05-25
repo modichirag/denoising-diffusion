@@ -111,7 +111,11 @@ elif args.dataset == "manifold_ds":
     dim_in = 5
     dataset_path = f"/mnt/home/jhan/diffusion-priors/experiments/manifold/manifold_dataset_eps{corruption_levels[1]:0.2f}.npz"
     assert os.path.exists(dataset_path), f"Dataset path {dataset_path} does not exist"
-    dataset = ManifoldDataset(dataset_path, epsilon=corruption_levels[1])
+    if args.corruption.startswith("projection_vec"):
+        obs_type = "vec"
+    elif args.corruption.startswith("projection_coeff"):
+        obs_type = "coeff"
+    dataset = ManifoldDataset(dataset_path, obs_type)
     # dl = infinite_dataloader(DataLoader(dataset, batch_size = batch_size, shuffle = True, pin_memory = True, num_workers = 0, drop_last = True))
     save_fig_fn = save_fig_manifold
     clean_data_valid = dataset.x_data.to(device)
