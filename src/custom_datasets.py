@@ -3,16 +3,20 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision import datasets, transforms
 from torchvision.datasets import CelebA
+import torch.nn.functional as F
 from PIL import Image
 import os
+from forward_maps import compute_At_y
+
+username = os.getenv('USER')
 
 class ImagesOnly(Dataset):
         def __init__(self, base_dataset):
             self.base = base_dataset
-            
+
         def __len__(self):
             return len(self.base)
-        
+
         def __getitem__(self, idx):
             img, _ = self.base[idx]
             return img
@@ -37,7 +41,7 @@ class ImageOnlyFolder(Dataset):
             img = self.transform(img)
         return img
 
-        
+
 # 1) Define your transforms
 mnist_transforms = transforms.Compose([
     transforms.Pad(2),                              # [0,255]→[0,1]
@@ -101,27 +105,27 @@ cifar10_transforms_raw = transforms.Compose([
 
 # 2) Instantiate the datasets
 mnist_train = datasets.MNIST(
-    root="/mnt/ceph/users/cmodi/ML_data/mnist",      # download location
+    root=f"/mnt/ceph/users/{username}/ML_data/mnist",      # download location
     train=True,
     download=True,
     transform=mnist_transforms
 )
 mnist_test = datasets.MNIST(
-    root="/mnt/ceph/users/cmodi/ML_data/mnist",
+    root=f"/mnt/ceph/users/{username}/ML_data/mnist",
     train=False,
     download=True,
     transform=mnist_transforms
 )
 
 cifar10_train = datasets.CIFAR10(
-    root="/mnt/ceph/users/cmodi/ML_data/cifar10",
+    root=f"/mnt/ceph/users/{username}/ML_data/cifar10",
     train=True,
     download=True,
     transform=cifar10_transforms
 )
 
 cifar10_test = datasets.CIFAR10(
-    root="/mnt/ceph/users/cmodi/ML_data/cifar10",
+    root=f"/mnt/ceph/users/{username}/ML_data/cifar10",
     train=False,
     download=True,
     transform=transforms.Compose([
@@ -141,10 +145,10 @@ celebA_transforms = transforms.Compose([
 ])
 
 # celebA = datasets.CelebA(root="/mnt/ceph/users/cmodi/ML_data/celebA",
-#                 split='train', 
+#                 split='train',
 #                 download=False, transform=celebA_transforms)
 
-celebA = ImageOnlyFolder("/mnt/ceph/users/cmodi/ML_data/celebA/img_align_celeba/", \
+celebA = ImageOnlyFolder(f"/mnt/ceph/users/{username}/ML_data/celebA/img_align_celeba/", \
                          transform=celebA_transforms)
 
 dataset_dict = {
@@ -196,7 +200,7 @@ class NumpyImageDataset(Dataset):
         """
         # self.data = np.load(path, mmap_mode='r')  # doesn't load full file into RAM
         self.array = array
-        self.transform = transform 
+        self.transform = transform
         self.channel_first = channel_first
 
     def __len__(self):
@@ -208,9 +212,9 @@ class NumpyImageDataset(Dataset):
         if isinstance(img, np.ndarray):
             if self.channel_first:
                 img = torch.from_numpy(img).float()
-            else: 
+            else:
                 img = torch.from_numpy(img).permute(2,0,1).float()
-                
+
         if self.transform:
             img = self.transform(img)
         return img
@@ -258,7 +262,7 @@ class CombinedLazyNumpyDataset(Dataset):
         self.files = file_list
         self.lengths = [np.load(f, mmap_mode='r').shape[0] for f in file_list]
         self.cumsum = np.cumsum(self.lengths)
-    
+
     def __len__(self):
         return self.cumsum[-1]
 
@@ -296,3 +300,43 @@ class CorruptedDataset(Dataset):
         img_corrupted, latents = self.corrupt(img, return_latents=True, generator=gen)
         return img, img_corrupted, latents
 
+
+class ManifoldDataset(Dataset):
+    def __init__(self, npz_filepath, obs_type):
+        loaded_data = np.load(npz_filepath)
+        self.x_data = torch.from_numpy(loaded_data['x']).float()
+        self.y_data_original = torch.from_numpy(loaded_data['y']).float()
+        self.A_data = torch.from_numpy(loaded_data['A']).float()
+        # y_data_original is 2-dim while y_data is 5-dim
+        if obs_type == 'vec':
+            self.y_data = compute_At_y(self.A_data, self.y_data_original)
+        elif obs_type == 'coeff':
+            padded_data = torch.randn((self.x_data.shape[0], self.x_data.shape[1] - self.y_data_original.shape[1]))
+            self.y_data = torch.cat((self.y_data_original, padded_data), dim=1)
+
+        if not (len(self.x_data) == len(self.y_data) == len(self.A_data)):
+            raise ValueError("All arrays must have the same number of samples (first dimension)")
+
+    def __len__(self):
+        return len(self.x_data)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+        sample_x = self.x_data[idx]
+        sample_y = self.y_data[idx]
+        sample_A = self.A_data[idx]
+        return sample_x, sample_y, sample_A
+
+class Manifold_A_Dataset(Dataset):
+    def __init__(self, npz_filepath):
+        loaded_data = np.load(npz_filepath)
+        self.A_data = torch.from_numpy(loaded_data['A']).float()
+
+    def __len__(self):
+        return len(self.A_data)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+        return self.A_data[idx]
