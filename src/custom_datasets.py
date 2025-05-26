@@ -232,14 +232,13 @@ class NumpyArrayDataset(Dataset):
 
 
 class CombinedNumpyDataset(Dataset):
-    def __init__(self, folder, mean=None, std=None):
+    def __init__(self, folder, mean=None, std=None, transform=None):
         import os
         files = os.listdir(folder)
         file_list = [os.path.join(folder, f) for f in files if f.endswith('.npy')]
         self.data = [np.load(f) for f in file_list]  # load into memory
         self.cumsum = np.cumsum([len(arr) for arr in self.data])
-        self.mean = mean
-        self.std = std
+        self.transform = transform
 
     def __len__(self):
         return self.cumsum[-1]
@@ -249,19 +248,21 @@ class CombinedNumpyDataset(Dataset):
         file_idx = np.searchsorted(self.cumsum, idx, side='right')
         local_idx = idx if file_idx == 0 else idx - self.cumsum[file_idx - 1]
         x = self.data[file_idx][local_idx]
-        if self.mean is not None and self.std is not None:
-            x = (x - self.mean) / self.std
-        return torch.from_numpy(x)
+        x = torch.from_numpy(x)
+        if self.transform is not None:
+            x = self.transform(x)
+        return x
 
 
 class CombinedLazyNumpyDataset(Dataset):
-    def __init__(self, folder):
+    def __init__(self, folder, transform=None):
         import os
         files = os.listdir(folder)
         file_list = [os.path.join(folder, f) for f in files if f.endswith('.npy')]
         self.files = file_list
         self.lengths = [np.load(f, mmap_mode='r').shape[0] for f in file_list]
         self.cumsum = np.cumsum(self.lengths)
+        self.transform = transform
 
     def __len__(self):
         return self.cumsum[-1]
@@ -270,7 +271,10 @@ class CombinedLazyNumpyDataset(Dataset):
         file_idx = np.searchsorted(self.cumsum, idx, side='right')
         local_idx = idx if file_idx == 0 else idx - self.cumsum[file_idx - 1]
         data = np.load(self.files[file_idx], mmap_mode='r')  # no 'with'
-        return torch.from_numpy(data[local_idx])
+        data = torch.from_numpy(data[local_idx])
+        if self.transform is not None:
+            data = self.transform(data)        
+        return data
 
 
 class CorruptedDataset(Dataset):
