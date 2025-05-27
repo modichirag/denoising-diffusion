@@ -2,9 +2,43 @@ import sys, os
 import h5py
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 import math
 from dataclasses import dataclass
+
+def inpaint_zeros_with_avg(x, kernel_size=3):
+    """
+    Replace zero-valued pixels in x with the average of their non-zero neighbors.    
+    Args:
+        x: Tensor of shape [B, C, H, W] or [C, H, W] or [H, W]
+        kernel_size: Size of the neighborhood (must be odd)
+    Returns:
+        Inpainted tensor with zeros replaced
+    """
+    if x.dim() == 2:
+        x = x.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
+    elif x.dim() == 3:
+        x = x.unsqueeze(0)  # [1, C, H, W]
+    
+    B, C, H, W = x.shape
+    pad = kernel_size // 2
+    mask = (x != 0).float()
+
+    # Convolution kernel
+    kernel = torch.ones((C, 1, kernel_size, kernel_size), device=x.device)
+    # Compute local sum and count of non-zero neighbors
+    local_sum = F.conv2d(x, kernel, padding=pad, groups=C)
+    local_count = F.conv2d(mask, kernel, padding=pad, groups=C)
+
+    # Avoid division by zero
+    local_avg = local_sum / (local_count + 1e-8)
+    # Replace only where x == 0
+    x_filled = x.clone()
+    x_filled[x == 0] = local_avg[x == 0]
+
+    return x_filled.squeeze(0) if x_filled.shape[0] == 1 else x_filled
+
 
 def real2complex(x: torch.Tensor) -> torch.Tensor:
     """
@@ -192,6 +226,8 @@ class MRI_Subsampling_Pixel:
     downscale_factor: int = 4
     expand_latents: bool = True
     mode: str = 'same_rate'
+    noise_masked: bool = False
+    interpolate_masked: bool = False
 
     def __post_init__(self):
         self.downsampler = nn.PixelUnshuffle(downscale_factor=self.downscale_factor)
@@ -207,8 +243,16 @@ class MRI_Subsampling_Pixel:
         mask = make_mask(n=img.shape[0], w=img.shape[-1],  \
                         r=self.r, generator=generator, mode=self.mode).to(img.device) # (N, 1, D, 1)
         y = img * mask
+        if self.interpolate_masked:
+            y = inpaint_zeros_with_avg(y, kernel_size=3)
+
         z = torch.randn(y.shape, generator=generator).to(img.device) 
         y = y + z*self.epsilon
+        if self.noise_masked:
+            y *= mask
+            z = torch.randn_like(y, device=img.device)
+            y += (z * ~(mask))
+
         y = fourier_to_pix(y, channel_first=True)
         y = self.downsampler(y)  
 
@@ -264,62 +308,6 @@ class MRI_Subsampling_Fourier:
             return y, mask
         else:
             return y
-
-
-
-# def mri_subsampling_fourier(r, epsilon, downscale_factor=4, mode='same_rate', fmri_mean=None, fmri_std=None):
-#     """
-#     Randomly subsample the k-space data of an image.
-#     Excects image in fourier space, stadard (N, 2, D, D) or scrambled (N, 2s^2, D/s, D/s).
-#     Args:
-#         r: downsampling factor (controls the band-stop width)
-#         epsilon: noise level
-#     """
-#     downsampler = nn.PixelUnshuffle(downscale_factor=downscale_factor)
-#     upsampler = nn.PixelShuffle(upscale_factor=downscale_factor)
-#     mean = np.load("/mnt/ceph/users/cmodi/ML_data/fastMRI/fourier-sub-mean.npy")
-#     std = np.load("/mnt/ceph/users/cmodi/ML_data/fastMRI/fourier-sub-std.npy")
-#     # fmri_mean = torch.from_numpy(mean).to(torch.float32)
-#     # fmri_std = torch.from_numpy(std).to(torch.float32)
-
-#     def fwd(img, return_latents=False, generator=None):
-#         was_3d = (img.dim() == 3)
-#         if was_3d:
-#             img = img.unsqueeze(0)
-#         if img.shape[1] == 2 : # already in Fourier space
-#             D = img.shape[2]
-#         elif img.shape[1] == 2*(downscale_factor**2): # convert to Fourier space
-#             img = upsampler(img)  # shape: [N, 2, D, D]
-#             assert img.shape[1] == 2
-#             D = img.shape[2]
-
-#         if fmri_mean is not None:
-#             img = img * fmri_std.to(img.device) + fmri_mean.to(img.device)
-#         # move channel last
-#         mask = make_mask(n=img.shape[0], w=D, r=r, generator=generator, mode=mode).to(img.device) # (N, 1, 320, 1)
-#         mask = mask.expand(-1, -1, -1, D)#.to(float)  # shape [N, 1, D, D]
-#         y = img * mask
-#         z = torch.randn(y.shape, generator=generator).to(img.device) 
-#         y = y + z*epsilon
-                
-#         if fmri_mean is not None:
-#             y = (y  - fmri_mean.to(img.device))/ fmri_std.to(img.device)
-#         y = downsampler(y)  # shape: [N, 2*s^2, D, D]
-
-#         if was_3d:
-#             y = y.squeeze(0)
-        
-#         if return_latents:
-#             # mask = mask.expand(-1, -1, -1, D).to(float)  # shape [N, 1, D, D]
-#             mask = downsampler(mask).to(float)  # shape [N, 1, D, D]
-#             # print(y.shape, mask.shape)
-#             if was_3d:
-#                 mask = mask.squeeze(0)
-#             return y, mask
-#         else:
-#             return y
-
-#     return fwd
 
 
 

@@ -10,7 +10,7 @@ from custom_datasets import CombinedNumpyDataset, CombinedLazyNumpyDataset
 from networks import ConditionalDhariwalUNet
 from interpolant_utils import DeconvolvingInterpolant
 import forward_maps as fwd_maps
-from forward_maps import mri_subsampling, mri_subsampling2, mri_subsampling3
+from forward_maps import corruption_dict, parse_latents
 from trainer_si import Trainer
 import argparse
 
@@ -20,7 +20,7 @@ print("DEVICE : ", device)
 
 parser = argparse.ArgumentParser(description="")
 parser.add_argument("--corruption", type=str, help="corruption")
-parser.add_argument("--mode", type=str, default='same_rate', help="corruption")
+parser.add_argument("--corruption_mode", type=str, default='same_rate', help="corruption")
 parser.add_argument("--corruption_levels", type=float, nargs='+', help="corruption level")
 parser.add_argument("--channels", type=int, default=32, help="number of channels in model")
 parser.add_argument("--train_steps", type=int, default=101, help="number of channels in model")
@@ -36,6 +36,7 @@ parser.add_argument("--alpha", type=float, default=0.9, help="probability of usi
 parser.add_argument("--resamples", type=int, default=1, help="number of resamplings")
 parser.add_argument("--multiview", action='store_true', help="change corruption every epoch if provided, else not")
 
+
 args = parser.parse_args()
 print(args)
 
@@ -44,12 +45,17 @@ if args.multiview:
 else:
     BASEPATH = '/mnt/ceph/users/cmodi/diffusion_guidance/singleview/'
 
-D0 = 160
-s = 4
+D0 = 80
+s = 2
 D = int(D0/s)
 nc = int(s**2)
-if args.corruption == "mri2": nc *= 2
-train_batch_size = 64
+shuffler = torch.nn.PixelShuffle(s)
+unshuffler = torch.nn.PixelUnshuffle(s)
+data_folder = "/mnt/ceph/users/cmodi/ML_data/fastMRI/knee-singlecoil-train-pix-sub4/"
+# data_folder = "/mnt/ceph/users/cmodi/ML_data/fastMRI/tmp-pix-sub4/"
+dataset = CombinedNumpyDataset(data_folder, transform = unshuffler)
+train_batch_size = 128
+
 
 # Parse arguments
 model_channels = args.channels #192
@@ -63,34 +69,20 @@ if gated:
 lr_scheduler = args.lr_scheduler
 
 # Parse corruption arguments
-if D0 == 160:
-    data_folder = "/mnt/ceph/users/cmodi/ML_data/fastMRI/knee-singlecoil-train-fourier-sub//"
-else:
-    data_folder = "/mnt/ceph/users/cmodi/ML_data/fastMRI/knee-singlecoil-train-fourier/"
-dataset = CombinedNumpyDataset(data_folder)
 corruption = args.corruption
 corruption_levels = args.corruption_levels
-if args.corruption == 'mri1':
-    fwd_func = mri_subsampling1(**corruption_levels, mode=mode)
-if args.corruption == 'mri2':
-    fwd_func = mri_subsampling2(**corruption_levels, mode=mode)
-if args.corruption == 'mri3':
-    fwd_func = mri_subsampling3(**corruption_levels, mode=mode)
-# try:
-#     fwd_func = fwd_maps.corruption_dict[corruption](*corruption_levels)
-# except Exception as e:
-#     print("Exception in loading corruption function : ", e)
-#     sys.exit()
+fwd_func = corruption_dict[corruption](*corruption_levels, mode=args.corruption_mode, downscale_factor=s)
+use_latents, latent_dim = parse_latents(corruption, D=D, s=s)
+if use_latents:
+    print("Will use latents of dimension: ", latent_dim)
+
 cname = "-".join([f"{i:0.2f}" for i in corruption_levels])
-folder = f"mri-{corruption}-{cname}"
+folder = f"{corruption}-{cname}"
 if args.prefix != "": folder = f"{args.prefix}-{folder}"
 if args.suffix != "": folder = f"{folder}-{args.suffix}"
 results_folder = f"{BASEPATH}/{folder}/"
 os.makedirs(results_folder, exist_ok=True)
 print(f"Results will be saved in folder: {results_folder}")
-use_latents, latent_dim = fwd_maps.parse_latents(corruption, D)
-if use_latents:
-    print("Will use latents of dimension: ", latent_dim)
 
 # Initialize model and train
 b =  ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim,
