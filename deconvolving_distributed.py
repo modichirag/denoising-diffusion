@@ -8,27 +8,44 @@ from torch.utils.data import DistributedSampler, DataLoader
 
 sys.path.append('./src/')
 from utils import count_parameters, infinite_dataloader
-from custom_datasets import dataset_dict, ImagesOnly
+from custom_datasets import dataset_dict, ImagesOnly, CorruptedDataset
 from networks import ConditionalDhariwalUNet
 from interpolant_utils import DeconvolvingInterpolant
 import forward_maps as fwd_maps
 from trainer_si import Trainer, get_worker_info
 import argparse
 
-BASEPATH = '/mnt/ceph/users/cmodi/diffusion_guidance/'
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+print("DEVICE : ", device)
 
 parser = argparse.ArgumentParser(description="")
-parser.add_argument("--dataset", type=str, help="dataset")
 parser.add_argument("--corruption", type=str, help="corruption")
 parser.add_argument("--corruption_levels", type=float, nargs='+', help="corruption level")
+parser.add_argument("--dataset", type=str, default='cifar10', help="dataset")
 parser.add_argument("--channels", type=int, default=32, help="number of channels in model")
 parser.add_argument("--train_steps", type=int, default=101, help="number of channels in model")
-parser.add_argument("--batch_size", type=int, default=32, help="batch size")
+parser.add_argument("--batch_size", type=int, default=128, help="batch size")
+parser.add_argument("--mini_batch_size", type=int, default=128, help="batch size per iteration")
 parser.add_argument("--learning_rate", type=float, default=1e-3, help="learning rate")
 parser.add_argument("--prefix", type=str, default='', help="prefix for folder name")
 parser.add_argument("--suffix", type=str, default='', help="suffix for folder name")
 parser.add_argument("--gated", action='store_true', help="gated convolution if provided, else not")
 parser.add_argument("--lr_scheduler", action='store_true', help="use scheduler if provided, else not")
+parser.add_argument("--dataset_seed", type=int, default=42, help="corrupt dataset seed")
+parser.add_argument("--ode_steps", type=int, default=80, help="ode steps")
+parser.add_argument("--alpha", type=float, default=1., help="probability of using new data")
+parser.add_argument("--resamples", type=int, default=1, help="number of resamplings")
+parser.add_argument("--multiview", action='store_true', help="change corruption every epoch if provided, else not")
+parser.add_argument("--max_pos_embedding", type=int, default=2, help="number of resamplings")
+
+args = parser.parse_args()
+print(args)
+
+if args.multiview: 
+    BASEPATH = '/mnt/ceph/users/cmodi/diffusion_guidance/multiview/'
+else:
+    BASEPATH = '/mnt/ceph/users/cmodi/diffusion_guidance/singleview/'
+
 
 # Initialize DDP
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -39,89 +56,77 @@ world_size, rank, local_rank, device = get_worker_info()
 torch.cuda.set_device(device)
 print(f"DEVICE (Rank {local_rank}): {device}")
 
+
 # Parse arguments
-args = parser.parse_args()
-print(args)
+dataset, D, nc = dataset_dict[args.dataset]
+if args.dataset == 'celebA':
+    image_dataset = dataset
+else:
+    image_dataset = ImagesOnly(dataset)
 model_channels = args.channels #192
 train_num_steps = args.train_steps
-save_and_sample_every = int(train_num_steps//50)
+save_and_sample_every = 500 #min(500, int(train_num_steps//50))
 batch_size = args.batch_size
 lr = args.learning_rate 
 gated = args.gated
+if gated: 
+    args.suffix = f"{args.suffix}-gated" if args.suffix else "gated"
 lr_scheduler = args.lr_scheduler
-# Dataset arguments
-dataset, D, nc = dataset_dict[args.dataset]
-image_dataset = ImagesOnly(dataset)
-dataset_sampler = DistributedSampler(image_dataset, num_replicas=world_size, \
-                                     shuffle=True, rank=local_rank)
+
+
 # Parse corruption arguments
 corruption = args.corruption
 corruption_levels = args.corruption_levels
 try:
     fwd_func = fwd_maps.corruption_dict[corruption](*corruption_levels)
 except Exception as e:
-    print(e)
+    print("Exception in loading corruption function : ", e)
     sys.exit()
-
-# Make folder
 cname = "-".join([f"{i:0.2f}" for i in corruption_levels])
+print(f"Corruption name for levels {corruption_levels}: ", cname)
 folder = f"{args.dataset}-{corruption}-{cname}"
 if args.prefix != "": folder = f"{args.prefix}-{folder}"
 if args.suffix != "": folder = f"{folder}-{args.suffix}"
 results_folder = f"{BASEPATH}/{folder}/"
 os.makedirs(results_folder, exist_ok=True)
 print(f"Results will be saved in folder: {results_folder}")
-if 'mask' in corruption:
-    use_latents = True
-    print("Will be using latents: ", use_latents)
-    latent_dim = [1, D, D]
-else:
-    use_latents = False
-    latent_dim = None
+use_latents, latent_dim = fwd_maps.parse_latents(corruption, D)
+if use_latents:
+    print("Will use latents of dimension: ", latent_dim)
+
 
 # Initialize model and train
 b =  ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim,
-                        model_channels=model_channels, gated=gated).to(device)
-# b = VelocityField(model, use_compile=True)
-b = DDP(b, device_ids=[local_rank])  # Wrap model with DDP
+                            model_channels=model_channels, gated=gated, \
+                            max_pos_embedding=args.max_pos_embedding).to(device)
+b = DDP(b, device_ids=[local_rank], find_unused_parameters=True)  # Wrap model with DDP
 print("Parameter count : ", count_parameters(b))
-deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, n_steps=80).to(device)
+deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, \
+                                    alpha=args.alpha, resamples=args.resamples, \
+                                    n_steps=args.ode_steps).to(device)
+corrupt_dataset = CorruptedDataset(image_dataset, deconvolver.push_fwd, \
+                                   tied_rng=not(args.multiview), base_seed=args.dataset_seed)
+dataset_sampler = DistributedSampler(corrupt_dataset, num_replicas=world_size, \
+                                     shuffle=True, rank=local_rank)
 
+train_batch_size = int(batch_size//world_size)
+gradient_accumulate_every = 1 #max(1, int(train_batch_size // args.mini_batch_size))
+print("Launch Train")
 trainer = Trainer(model=b, 
         deconvolver=deconvolver, 
-        dataset = image_dataset,
+        dataset = corrupt_dataset,
         dataset_sampler=dataset_sampler,
-        train_batch_size = batch_size//world_size,
-        gradient_accumulate_every = 1,
+        train_batch_size = train_batch_size,
+        gradient_accumulate_every = gradient_accumulate_every,
         train_lr = lr,
         lr_scheduler = lr_scheduler,
         train_num_steps = train_num_steps,
         save_and_sample_every= save_and_sample_every,
         results_folder=results_folder, 
-        mixed_precision_type = 'fp32',
+        warmup_fraction=0.05,
+        # mixed_precision_type = 'fp32',
         )
 
 trainer.train()
 
 dist.destroy_process_group()
-
-
-# def train_step(xn, b, deconvolver, opt, sched):
-#     # with torch.autocast(device_type=device, dtype=dtype):
-#     loss_val = deconvolver.loss_fn(b, xn)  
-#     loss_val.backward()
-#     opt.step()
-#     sched.step()
-#     opt.zero_grad()    
-#     res = {'loss': loss_val.detach().cpu()}
-#     return res
-
-# # opt = torch.optim.Adam(b.parameters(), lr=lr)
-# # sched = torch.optim.lr_scheduler.StepLR(opt, step_size=5000, gamma=0.9)
-# # dl = infinite_dataloader(DataLoader(image_dataset, batch_size = batch_size, 
-# #                         sampler=dataset_sampler, pin_memory = True, num_workers = 1))
-# # x = next(dl).to(device)
-# # if local_rank == 0: print("First run")
-# # xn = deconvolver.push_fwd(x)
-# # res = train_step(xn, b, deconvolver, opt, sched)
-# # print(res)
