@@ -27,26 +27,26 @@ class MLPVelocityField(torch.nn.Module):
         super(MLPVelocityField, self).__init__()
 
         self.t_freq = t_freq
-        input_dim =  d + self.t_freq  
-        if latent_dim is not None: 
+        input_dim =  d + self.t_freq
+        if latent_dim is not None:
             input_dim += self.t_freq
         output_dim = d
         if latent_dim is not None:
             self.latent_net = MLPResNet(latent_dim[0], hidden_dim, t_freq, 2)
         else:
             self.latent_net = None
-        self.net = MLPResNet(input_dim, hidden_dim, output_dim, depth)        
+        self.net = MLPResNet(input_dim, hidden_dim, output_dim, depth)
         self.time_encoding = PositionalEmbedding(t_freq, max_positions=2)
-        
-    def _single_forward(self, x, t, latents=None):  
+
+    def _single_forward(self, x, t, latents=None):
         # t_encoded = fourier_encode(t, self.t_freq)  # [B, 2*n_freqs]
         t_encoded = self.time_encoding(t.unsqueeze(0)).squeeze(0)  # [B, 2*n_freqs]
         x_cond = torch.cat([x, t_encoded])
-        if self.latent_net is not None: 
+        if self.latent_net is not None:
             latents = self.latent_net(latents)
             x_cond = torch.cat([x_cond, latents])
         return self.net(x_cond)
-    
+
     def forward(self, x, t, latents=None):
         if latents is None:
             latents = t*0.
@@ -105,6 +105,29 @@ class DeconvolvingInterpolant(torch.nn.Module):
             bt   = b(It, torch.squeeze(t), latent1)
             loss += torch.mean((bt - b_true)**2)
         return loss / self.resamples
+
+    # def loss_fn_gauss_reg(self, b, x, latent=None):
+    #     x0 = self.transport(b, x, latent=latent)
+    #     batch_size = x.shape[0]
+    #     # pick data with probabability 1-alpha
+    #     normal_sample = torch.randn_like(x0)
+    #     raw_mask = torch.bernoulli(torch.full((batch_size,), self.alpha)).to(x.device)
+    #     mask = raw_mask.view(batch_size, *([1] * (x.ndim - 1)))
+    #     x0 = x0 * mask + normal_sample * (1 - mask)
+    #     batch_size = x.shape[0]
+    #     loss = 0.
+    #     for i in range(self.resamples):
+    #         x1, latent1 = self.push_fwd(x0, return_latents=True)
+    #         latent1 = latent1 if self.use_latents else None
+    #         # proceed as before
+    #         t = torch.rand(x.shape[0]).to(x.device)
+    #         new_shape = [-1] + [1] * (x.ndim - 1)
+    #         t = t.reshape(new_shape)
+    #         It = (1-t)*x0 + t*x1
+    #         b_true = x1 - x0
+    #         bt   = b(It, torch.squeeze(t), latent1)
+    #         loss += torch.mean((bt - b_true)**2)
+    #     return loss / self.resamples
 
     def loss_fn_cleandata(self, b, x, x0, latent=None):
         batch_size = x.shape[0]
@@ -217,7 +240,8 @@ class DeconvolvingInterpolant(torch.nn.Module):
             return Xt_final
 
 
-def save_fig(idx, image, corrupted, clean, results_folder, epsilon=""):
+def save_fig(idx, image, corrupted, clean, results_folder, **kargs):
+    epsilon = kargs.get('epsilon', "")
     to_show = [image, corrupted, clean]
     if image.shape[1] != corrupted.shape[1]:
         save_mri_fig(idx, image, corrupted, clean, results_folder, epsilon)
@@ -239,8 +263,8 @@ def save_fig(idx, image, corrupted, clean, results_folder, epsilon=""):
         plt.savefig(f'{results_folder}/denoising_{idx}.png', dpi=300)
         plt.close()
 
-def save_mri_fig(idx, image, corrupted, clean, results_folder, epsilon=""):
-    
+def save_mri_fig(idx, image, corrupted, clean, results_folder, **kargs):
+
     from mri_data import fourier_to_pix
     shuffler = torch.nn.PixelShuffle(4)
     to_show = [fourier_to_pix(image), \
@@ -265,8 +289,9 @@ def save_mri_fig(idx, image, corrupted, clean, results_folder, epsilon=""):
     plt.close()
 
 
-def save_fig_checker(idx, clean, corrupted, generated, results_folder, push_fwd_func=None):
+def save_fig_2dsynt_vec(idx, clean, corrupted, generated, results_folder, **kargs):
     c = '#62508f' # plot color
+    push_fwd_func = kargs.get('push_fwd_func', None)
     if push_fwd_func is None:
         fig, axes = plt.subplots(1,3, figsize=(15, 5))
     else:
@@ -299,6 +324,51 @@ def save_fig_checker(idx, clean, corrupted, generated, results_folder, push_fwd_
 
     plt.subplots_adjust(wspace=0.0, hspace=0.0)  # Reduce spacing
     # plt.tight_layout()
+    plt.savefig(f'{results_folder}/denoising_{idx}.png', dpi=300)
+    plt.close()
+
+def save_fig_2dsynt_coeff(idx, clean, corrupted, generated, results_folder, **kargs):
+    c = '#62508f' # plot color
+    push_fwd_func = kargs.get('push_fwd_func', None)
+    latents = kargs.get('latents', None)
+    assert latents is not None, "Latents should be provided for this function"
+    latents = latents.squeeze()
+    assert latents.shape[-1] == 2, "Latents should be 2D for this function"
+    angles_rad = grab(torch.atan2(latents[:, 1], latents[:, 0]))
+    if push_fwd_func is None:
+        fig, axes = plt.subplots(1,3, figsize=(15, 5))
+    else:
+        fig, axes = plt.subplots(1,4, figsize=(20, 5))
+    clean = grab(clean)
+    corrupted = grab(corrupted)
+    generated = grab(generated)
+
+    axes[0].scatter(clean[:,0], clean[:,1], alpha = 0.03, c = c)
+    axes[0].set_title(r"Clean samples", fontsize = 18)
+    axes[0].set_xlim(-6,6), axes[0].set_ylim(-6,6)
+    axes[0].set_xticks([-4,0,4]), axes[0].set_yticks([-4,0,4])
+
+    axes[1].scatter(corrupted[:,0], angles_rad, alpha = 0.03, c = c)
+    axes[1].set_title(r"Corrupted samples", fontsize = 18)
+    axes[1].set_xlim(-6,6), axes[2].set_ylim(-6,6)
+    axes[1].set_xticks([-4,0,4]), axes[2].set_yticks([]);
+
+    axes[2].scatter(generated[:,0], generated[:,1], alpha = 0.03, c = c)
+    axes[2].set_title(r"Generated samples ", fontsize = 18)
+    axes[2].set_xlim(-6,6), axes[1].set_ylim(-6,6)
+    axes[2].set_xticks([-4,0,4]), axes[1].set_yticks([])
+
+    if push_fwd_func is not None:
+        generated_corrupted, latents_new = push_fwd_func(torch.from_numpy(generated), return_latents=True)
+        generated_corrupted = grab(generated_corrupted)
+        latents_new = latents_new.squeeze()
+        angles_rad_new = grab(torch.atan2(latents_new[:, 1], latents_new[:, 0]))
+        axes[3].scatter(generated_corrupted[:,0], angles_rad_new, alpha = 0.03, c = c)
+        axes[3].set_title(r"Generated corrupted samples ", fontsize = 18)
+        axes[3].set_xlim(-6,6), axes[3].set_ylim(-6,6)
+        axes[3].set_xticks([-4,0,4]), axes[3].set_yticks([])
+
+    plt.subplots_adjust(wspace=0.0, hspace=0.0)  # Reduce spacing
     plt.savefig(f'{results_folder}/denoising_{idx}.png', dpi=300)
     plt.close()
 

@@ -11,7 +11,7 @@ from utils import count_parameters, infinite_dataloader, grab
 from nets import SimpleFeedForward, FeedForwardwithEMB
 from custom_datasets import ManifoldDataset, Manifold_A_Dataset
 from distribution import DistributionDataLoader, distribution_dict
-from interpolant_utils import DeconvolvingInterpolant, save_fig_checker, save_fig_manifold
+from interpolant_utils import DeconvolvingInterpolant, save_fig_2dsynt_coeff, save_fig_2dsynt_vec, save_fig_manifold
 from trainer_si_mlp import TrainerMLP
 import forward_maps as fwd_maps
 import argparse
@@ -22,18 +22,18 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print("DEVICE : ", device)
 
 parser = argparse.ArgumentParser(description="")
-parser.add_argument("--dataset", type=str, default="checker", help="dataset")
-parser.add_argument("--corruption", type=str, default="gaussian_noise", help="corruption")
+parser.add_argument("--dataset", type=str, default="moon", help="dataset")
+parser.add_argument("--corruption", type=str, default="projection_coeff", help="corruption")
 parser.add_argument("--corruption_levels", type=float, nargs='+', help="corruption level")
 parser.add_argument("--fc_width", type=int, default=256, help="width of the feedforward network")
 parser.add_argument("--fc_depth", type=int, default=3, help="depth of the feedforward network")
-parser.add_argument("--train_steps", type=int, default=20000, help="number of channels in model")
+parser.add_argument("--train_steps", type=int, default=30000, help="number of channels in model")
 parser.add_argument("--batch_size", type=int, default=4000, help="batch size")
 parser.add_argument("--learning_rate", type=float, default=5e-4, help="learning rate")
 parser.add_argument("--prefix", type=str, default='', help="prefix for folder name")
 parser.add_argument("--suffix", type=str, default='', help="suffix for folder name")
 parser.add_argument("--lr_scheduler", action='store_true', help="use scheduler if provided, else not")
-parser.add_argument("--clean_data_steps", type=int, default=-1, help="number of clean data steps to use in training")
+parser.add_argument("--clean_data_steps", type=int, default=20000, help="number of clean data steps to use in training")
 parser.add_argument("--ode_steps", type=int, default=40, help="ode steps")
 parser.add_argument("--save_and_sample_every", type=int, default=1000, help="save and sample every n steps")
 parser.add_argument("--model_path", type=str, default='latest', help="which model to load")
@@ -41,8 +41,8 @@ parser.add_argument("--resume_count", type=int, default=1, help="continued train
 
 # Parse arguments
 args = parser.parse_args()
-# args = parser.parse_args(['--corruption_levels', '0.4',
-#                           '--suffix', 'mixed_noise'])
+# args = parser.parse_args(['--corruption_levels', '1', '0.4',
+#                           '--suffix', 'test'])
 
 print(args)
 train_num_steps = args.train_steps
@@ -76,7 +76,6 @@ os.makedirs(results_folder, exist_ok=True)
 print(f"Results will be saved in folder: {results_folder}")
 use_latents, latent_dim = fwd_maps.parse_latents(corruption, None)
 
-# Initialize model and train
 alpha = 1.0
 use_follmer = False
 if use_follmer:
@@ -92,7 +91,10 @@ if args.dataset in ["checker", "moon"]:
     dim_in = 2
     # pass DalaLoader as a dataset, will be checked in the trainer
     dataset = DistributionDataLoader(distribution_dict[args.dataset](device=device), batch_size=batch_size, fwd_func=fwd_func, use_latents=use_latents)
-    save_fig_fn = save_fig_checker
+    if args.corruption.startswith("projection_vec"):
+        save_fig_fn = save_fig_2dsynt_vec
+    elif args.corruption.startswith("projection_coeff"):
+        save_fig_fn = save_fig_2dsynt_coeff
     clean_data_valid = dataset.distribution.sample(20000).to(device)
 elif args.dataset == 'gmm':
     dim_in = 2
@@ -105,7 +107,10 @@ elif args.dataset == 'gmm':
     var_target = torch.stack([torch.tensor([0.7, 0.7]) for i in range(nmix)])
     distribution = distribution_dict[args.dataset](mus_target, var_target, device=device, ndim=dim_in)
     dataset = DistributionDataLoader(distribution, batch_size=batch_size, fwd_func=fwd_func, use_latents=use_latents)
-    save_fig_fn = lambda idx, clean, corrupted, generated, results_folder: save_fig_checker(idx, clean, corrupted, generated, results_folder, deconvolver.push_fwd)
+    if args.corruption.startswith("projection_vec"):
+        save_fig_fn = save_fig_2dsynt_vec
+    elif args.corruption.startswith("projection_coeff"):
+        save_fig_fn = save_fig_2dsynt_coeff
     clean_data_valid = dataset.distribution.sample(10000).to(device)
 elif args.dataset == "manifold_ds":
     dim_in = 5
