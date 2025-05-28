@@ -5,9 +5,10 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.set_float32_matmul_precision('high')
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DistributedSampler, DataLoader
+import json
 
 sys.path.append('./src/')
-from utils import count_parameters, infinite_dataloader
+from utils import count_parameters, make_serializable
 from custom_datasets import dataset_dict, ImagesOnly, CorruptedDataset
 from networks import ConditionalDhariwalUNet
 from interpolant_utils import DeconvolvingInterpolant
@@ -72,7 +73,8 @@ gated = args.gated
 if gated: 
     args.suffix = f"{args.suffix}-gated" if args.suffix else "gated"
 lr_scheduler = args.lr_scheduler
-
+train_batch_size = int(batch_size//world_size)
+gradient_accumulate_every = max(1, int(train_batch_size // args.mini_batch_size))
 
 # Parse corruption arguments
 corruption = args.corruption
@@ -93,13 +95,16 @@ print(f"Results will be saved in folder: {results_folder}")
 use_latents, latent_dim = fwd_maps.parse_latents(corruption, D)
 if use_latents:
     print("Will use latents of dimension: ", latent_dim)
-
+args_dict = make_serializable(vars(args) if isinstance(args, argparse.Namespace) else args)
+if local_rank == 0:
+    with open(f"{results_folder}/args.json", "w") as f:
+        json.dump(args_dict, f, indent=4)
 
 # Initialize model and train
 b =  ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim,
                             model_channels=model_channels, gated=gated, \
                             max_pos_embedding=args.max_pos_embedding).to(device)
-b = DDP(b, device_ids=[local_rank], find_unused_parameters=True)  # Wrap model with DDP
+b = DDP(b, device_ids=[local_rank], find_unused_parameters=False)     
 print("Parameter count : ", count_parameters(b))
 deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, \
                                     alpha=args.alpha, resamples=args.resamples, \
@@ -109,8 +114,6 @@ corrupt_dataset = CorruptedDataset(image_dataset, deconvolver.push_fwd, \
 dataset_sampler = DistributedSampler(corrupt_dataset, num_replicas=world_size, \
                                      shuffle=True, rank=local_rank)
 
-train_batch_size = int(batch_size//world_size)
-gradient_accumulate_every = 1 #max(1, int(train_batch_size // args.mini_batch_size))
 print("Launch Train")
 trainer = Trainer(model=b, 
         deconvolver=deconvolver, 

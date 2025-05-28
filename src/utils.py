@@ -1,4 +1,5 @@
 import math
+from pathlib import Path
 
 def exists(x):
     return x is not None
@@ -84,3 +85,16 @@ def remove_orig_mod_prefix(state_dict):
 
 def is_compiled_model(model):
     return hasattr(model, "_orig_mod")
+
+
+def make_serializable(obj):
+    if isinstance(obj, (int, float, str, bool)) or obj is None:
+        return obj
+    elif isinstance(obj, (list, tuple)):
+        return [make_serializable(i) for i in obj]
+    elif isinstance(obj, dict):
+        return {k: make_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, Path):
+        return str(obj)
+    else:
+        return str(obj)  # fallback for unknown types

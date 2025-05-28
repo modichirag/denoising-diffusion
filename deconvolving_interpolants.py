@@ -2,9 +2,10 @@ import sys, os
 import torch
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.set_float32_matmul_precision('high')
+import json
 
 sys.path.append('./src/')
-from utils import count_parameters
+from utils import count_parameters, make_serializable
 from custom_datasets import dataset_dict, ImagesOnly, CorruptedDataset
 from networks import ConditionalDhariwalUNet
 from interpolant_utils import DeconvolvingInterpolant
@@ -78,6 +79,9 @@ print(f"Results will be saved in folder: {results_folder}")
 use_latents, latent_dim = fwd_maps.parse_latents(corruption, D)
 if use_latents:
     print("Will use latents of dimension: ", latent_dim)
+args_dict = make_serializable(vars(args) if isinstance(args, argparse.Namespace) else args)
+with open(f"{results_folder}/args.json", "w") as f:
+    json.dump(args_dict, f, indent=4)
 
 # Initialize model and train
 b =  ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim,
@@ -104,51 +108,3 @@ trainer = Trainer(model=b,
         )
 
 trainer.train()
-
-# def train_step(xn, b, denoiser, opt, sched):
-#     # ts  = torch.rand(xn.shape[0]).to(device)
-#     loss_val = denoiser.loss_fn(b, xn)  
-#     # perform backprop
-#     loss_val.backward()
-#     opt.step()
-#     sched.step()
-#     opt.zero_grad()    
-#     res = {'loss': loss_val.detach().cpu()}
-#     return res
-
-
-# model =  DhariwalUNet(D, nc, nc, model_channels=model_channels).to(device)
-# b = VelocityField(model)
-# dl = cycle(DataLoader(image_dataset, batch_size = batch_size, shuffle = True, pin_memory = True, num_workers = 1))
-# denoiser = DeconvolvingInterpolant(fwd_func, n_steps=80).to(device)
-
-# opt = torch.optim.Adam([{'params': b.parameters(), 'lr': lr} ])
-# sched = torch.optim.lr_scheduler.StepLR(opt, step_size=5000, gamma=0.9)
-
-# losses = []
-# from tqdm import tqdm
-# pbar = tqdm(range(train_num_steps))
-# for i in pbar:    
-#     x = next(dl).to(device)
-#     xn = denoiser.push_fwd(x)
-#     res = train_step(xn, b, denoiser, opt, sched)
-#     loss = res['loss'].detach().numpy().mean()    
-#     losses.append(loss)    
-#     pbar.set_description(f'Loss: {loss:.4f}')      
-#     if i % save_and_sample_every == 0:
-#         torch.save(b.state_dict(), f"{results_folder}/model.pt")
-#         np.save(f"{results_folder}/losses", losses)
-#         image = next(dl).to(device)
-#         corrupted = denoiser.push_fwd(image)
-#         clean = denoiser.transport(b, corrupted)
-#         save_fig(i, image, corrupted, clean, results_folder, corruption_level)
-#         print(f"Saved model at step {i}")
-
-# torch.save(b.state_dict(), f"{results_folder}/model.pt")
-# np.save(f"{results_folder}/losses", losses)
-
-# # Save fig
-# image = next(dl).to(device)
-# corrupted = denoiser.push_fwd(image)
-# clean = denoiser.transport(b, corrupted)
-# save_fig(42, image, corrupted, clean, results_folder, corruption_level)
