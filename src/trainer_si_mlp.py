@@ -225,7 +225,8 @@ class TrainerMLP:
                                 else:
                                     image, corrupted, latents = self.valid_data_plot
                                 clean = self.deconvolver.transport(self.ema.ema_model, corrupted, latents)
-                                self.save_fig_fn(milestone, image, corrupted, clean, self.results_folder)
+                                plot_kargs = {"latents": latents, "push_fwd_func": self.deconvolver.push_fwd}
+                                self.save_fig_fn(milestone, image, corrupted, clean, self.results_folder, **plot_kargs)
                                 print(f"Saved model at step {self.step}")
 
                 pbar.update(1)
@@ -248,7 +249,8 @@ class TrainerMLP:
                     else:
                         image, corrupted, latents = self.valid_data_plot
                     clean = self.deconvolver.transport(self.ema.ema_model, corrupted, latents)
-                    self.save_fig_fn("fin", image, corrupted, clean, self.results_folder)
+                    plot_kargs = {"latents": latents, "push_fwd_func": self.deconvolver.push_fwd}
+                    self.save_fig_fn("fin", image, corrupted, clean, self.results_folder, **plot_kargs)
                     if self.master_process:
                         print(f"Saved model at step {self.step}")
 
