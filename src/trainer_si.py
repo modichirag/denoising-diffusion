@@ -5,6 +5,7 @@ from multiprocessing import cpu_count
 
 import torch
 import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 
 from torch.optim import Adam
@@ -122,29 +123,30 @@ class Trainer:
     def save(self, milestone):
         if not self.master_process:
             return
-
         data = {
             'step': self.step,
-            # 'model': self.model.state_dict(),
             'opt': self.opt.state_dict(),
             'ema': self.ema.state_dict(),
-            # 'ema_model': self.ema.ema_model.state_dict(),
         }    
         if hasattr(self.model, "_orig_mod"):
             data['model'] = self.model._orig_mod.state_dict()
+        elif isinstance(self.model, DDP):
+            data['model'] = self.model.module.state_dict()
         else:
             data['model'] = self.model.state_dict()
+
         if hasattr(self.ema.ema_model, "_orig_mod"):
             data['ema_model'] = self.ema.ema_model._orig_mod.state_dict()
+        elif isinstance(self.ema.ema_model, DDP):
+            data['ema_model'] = self.ema.ema_model.module.state_dict()
         else:
             data['ema_model'] = self.ema.ema_model.state_dict()
-           
-
         
         if self.lr_scheduler is not None:
             data['scheduler'] = self.lr_scheduler.state_dict()
 
         torch.save(data, str(self.results_folder / f'model-{milestone}.pt'))
+
 
     def load(self, milestone):
         device = self.device
@@ -240,9 +242,10 @@ class Trainer:
                                 self.save("best")
                                 print(f"New best model at step {self.step} with loss {min_loss:.4f}")
                             self.ema.ema_model.eval()
-
+                            model_to_use = self.ema.ema_model.module if isinstance(self.ema.ema_model,\
+                                                            torch.nn.parallel.DistributedDataParallel) else self.ema.ema_model
                             with torch.autocast(device_type=device, dtype=typedict[self.mixed_precision_type]):
-                                with torch.inference_mode():
+                                with torch.no_grad():
                                     milestone = self.step // self.save_and_sample_every
                                     np.save(f"{self.results_folder}/losses", losses)
                                     image, corrupted, latents = next(self.dl)
@@ -250,7 +253,7 @@ class Trainer:
                                     corrupted = corrupted.to(self.device)
                                     latents = latents.to(self.device)
                                     latents = latents if self.deconvolver.use_latents else None
-                                    clean = self.deconvolver.transport(self.ema.ema_model, corrupted, latents)
+                                    clean = self.deconvolver.transport(model_to_use, corrupted, latents)
                                     try:
                                         iutils.save_fig(milestone, image, corrupted, clean, self.results_folder)
                                     except Exception as e:
@@ -266,7 +269,7 @@ class Trainer:
             self.save("latest")
             self.ema.ema_model.eval()
             with torch.autocast(device_type=device, dtype=typedict[self.mixed_precision_type]):
-                with torch.inference_mode():
+                with torch.no_grad():
                     milestone = self.step // self.save_and_sample_every
                     np.save(f"{self.results_folder}/losses", losses)
                     image, corrupted, latents = next(self.dl)

@@ -66,7 +66,7 @@ else:
     image_dataset = ImagesOnly(dataset)
 model_channels = args.channels #192
 train_num_steps = args.train_steps
-save_and_sample_every = 500 #min(500, int(train_num_steps//50))
+save_and_sample_every = min(500, int(train_num_steps//50))
 batch_size = args.batch_size
 lr = args.learning_rate 
 gated = args.gated
@@ -84,6 +84,11 @@ try:
 except Exception as e:
     print("Exception in loading corruption function : ", e)
     sys.exit()
+use_latents, latent_dim = fwd_maps.parse_latents(corruption, D)
+if use_latents:
+    print("Will use latents of dimension: ", latent_dim)
+
+# Folder name
 cname = "-".join([f"{i:0.2f}" for i in corruption_levels])
 print(f"Corruption name for levels {corruption_levels}: ", cname)
 folder = f"{args.dataset}-{corruption}-{cname}"
@@ -92,9 +97,6 @@ if args.suffix != "": folder = f"{folder}-{args.suffix}"
 results_folder = f"{BASEPATH}/{folder}/"
 os.makedirs(results_folder, exist_ok=True)
 print(f"Results will be saved in folder: {results_folder}")
-use_latents, latent_dim = fwd_maps.parse_latents(corruption, D)
-if use_latents:
-    print("Will use latents of dimension: ", latent_dim)
 args_dict = make_serializable(vars(args) if isinstance(args, argparse.Namespace) else args)
 if local_rank == 0:
     with open(f"{results_folder}/args.json", "w") as f:

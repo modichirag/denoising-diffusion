@@ -83,6 +83,13 @@ def infinite_dataloader(dl):
 def remove_orig_mod_prefix(state_dict):
     return {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
 
+def remove_all_prefix(state_dict):
+    new_dict = {k: v for k, v in state_dict.items()}
+    new_dict = {k.replace("_orig_mod.", ""): v for k, v in new_dict.items()}
+    new_dict = {k.replace("module.", ""): v for k, v in new_dict.items()}
+    return new_dict
+
+    
 def is_compiled_model(model):
     return hasattr(model, "_orig_mod")
 
