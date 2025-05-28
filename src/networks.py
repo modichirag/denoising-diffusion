@@ -202,7 +202,9 @@ class UNetBlock(torch.nn.Module):
 
         self.norm0 = GroupNorm(num_channels=in_channels, eps=eps)
         self.conv0 = Conv2d(in_channels=in_channels, out_channels=out_channels, kernel=3, up=up, down=down, resample_filter=resample_filter, gated=gated, **init)
-        self.affine = Linear(in_features=emb_channels, out_features=out_channels*(2 if adaptive_scale else 1), **init)
+        if self.emb_channels != 0:
+            self.affine = Linear(in_features=emb_channels, out_features=out_channels*(2 if adaptive_scale else 1), **init)
+        # self.affine = nn.Sequential(Linear(in_features=emb_channels, out_features=out_channels*(2 if adaptive_scale else 1), **init))
         self.norm1 = GroupNorm(num_channels=out_channels, eps=eps)
         self.conv1 = Conv2d(in_channels=out_channels, out_channels=out_channels, kernel=3, gated=gated, **init_zero)
 
@@ -582,7 +584,7 @@ class ConditionalDhariwalUNet(torch.nn.Module): #Difference in handling label_di
             latent_channels = max(latent_in_channels, latent_channels)
             self.map_latents = torch.nn.Sequential(
                 Conv2d(in_channels=C, out_channels=latent_channels, kernel=3, gated=gated, **init),
-                UNetBlock(in_channels=latent_channels, out_channels=latent_channels, emb_channels=latent_channels, \
+                UNetBlock(in_channels=latent_channels, out_channels=latent_channels, emb_channels=0, 
                             attention=False, dropout=0, init=init, init_zero=init_zero, gated=gated),
                 Conv2d(in_channels=latent_channels, out_channels=C, kernel=3, gated=gated, **init)
             )
