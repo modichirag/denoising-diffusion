@@ -1,5 +1,6 @@
 import math
 from pathlib import Path
+import torch
 
 def exists(x):
     return x is not None
@@ -105,3 +106,20 @@ def make_serializable(obj):
         return str(obj)
     else:
         return str(obj)  # fallback for unknown types
+
+
+def push_to_device(*tensors, device=None):
+    """
+    Move arbitrary number of tensors to the given device.   
+    Args:
+        *tensors: Arbitrary number of PyTorch tensors.
+        device (str or torch.device): Target device (e.g., 'cuda', 'cpu').
+    Returns:
+        Tuple of tensors on the specified device.
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(device)
+
+    return tuple(t.to(device) for t in tensors)
