@@ -15,7 +15,7 @@ def get_samples(b, deconvolver, dataloader, device, validation_data):
     if validation_data is None:
         data, obs, latents = next(dataloader)
     else:
-        image, obs, latents = validation_data
+        data, obs, latents = validation_data
     data, obs, latents = push_to_device(data, obs, latents, device=device)
     latents = latents if deconvolver.use_latents else None
     clean = deconvolver.transport(b, obs, latents)
@@ -61,7 +61,7 @@ def save_mri_fig(idx, image, corrupted, clean, results_folder, **kargs):
             ax = axar[i, j]
             im = ax.imshow(grab(to_show[i][j]), vmax=vmax, vmin=vmin)
     axar[0, 0].set_ylabel('Original\nImage')
-    axar[1, 0].set_ylabel(f'Corrupted\n$\sigma ${epsilon}')
+    axar[1, 0].set_ylabel(f'Corrupted\n$\sigma')
     axar[2, 0].set_ylabel(f'Clean')
     for axis in axar.flatten():
         axis.set_xticks([])
@@ -111,10 +111,15 @@ def save_fig_2dsynt_vec(idx, clean, corrupted, generated, results_folder, **karg
     plt.close()
 
 
-def save_fig_2dsynt_coeff(idx, clean, corrupted, generated, results_folder, **kargs):
+def save_fig_2dsynt_coeff(idx, b, deconvolver, dataloader, device, results_folder, losses, validation_data,  **kargs):
+# def save_fig_2dsynt_coeff(idx, clean, corrupted, generated, results_folder, **kargs):
+
+    clean, corrupted, latents, generated = get_samples(b, deconvolver, dataloader, device, validation_data)
+    push_fwd_func = deconvolver.push_fwd
+
     c = '#62508f' # plot color
     push_fwd_func = kargs.get('push_fwd_func', None)
-    latents = kargs.get('latents', None)
+    # latents = kargs.get('latents', None)
     assert latents is not None, "Latents should be provided for this function"
     latents = latents.squeeze()
     assert latents.shape[-1] == 2, "Latents should be 2D for this function"

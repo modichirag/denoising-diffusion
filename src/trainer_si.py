@@ -281,10 +281,10 @@ class Trainer:
                                 with torch.no_grad(), torch.autocast(device_type=device, dtype=typedict[self.mixed_precision_type]):
                                     if self.callback_fn is not None:
                                         milestone=self.step // self.save_and_sample_every
-                                        self.callback_fn(milestone, 
+                                        self.callback_fn(idx = milestone, 
                                                         b = model_to_use, deconvolver = self.deconvolver, 
-                                                        dataloader=self.dl, validation_data = self.validation_data,
-                                                        losses=losses, device=self.device, 
+                                                        dataloader = self.dl, validation_data = self.validation_data,
+                                                        losses = losses, device = self.device, 
                                                         results_folder = self.results_folder)
                             except Exception as e:
                                 print("Exception in executing callback function\n", e)
@@ -303,11 +303,11 @@ class Trainer:
             try:
                 with torch.no_grad(), torch.autocast(device_type=device, dtype=typedict[self.mixed_precision_type]):
                     if self.callback_fn is not None:
-                        self.callback_fn(milestone="fin", 
+                        self.callback_fn(idx = "fin", 
                                         b = model_to_use, deconvolver = self.deconvolver, 
-                                        dataloader=self.dl, validation_data = self.validation_data,
-                                        losses=losses, device=self.device, 
-                                        folder = self.results_folder)
+                                        dataloader = self.dl, validation_data = self.validation_data,
+                                        losses = losses, device=self.device, 
+                                        results_folder = self.results_folder)
             except Exception as e:
                 print("Exception in executing callback function\n", e)
 
