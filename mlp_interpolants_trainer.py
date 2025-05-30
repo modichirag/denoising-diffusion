@@ -11,8 +11,9 @@ from utils import count_parameters, infinite_dataloader, grab
 from nets import SimpleFeedForward, FeedForwardwithEMB
 from custom_datasets import ManifoldDataset, Manifold_A_Dataset
 from distribution import DistributionDataLoader, distribution_dict
-from interpolant_utils import DeconvolvingInterpolant, save_fig_2dsynt_coeff, save_fig_2dsynt_vec, save_fig_manifold
-from trainer_si_mlp import TrainerMLP
+from interpolant_utils import DeconvolvingInterpolant
+from callbacks import save_fig_2dsynt_coeff, save_fig_2dsynt_vec, save_fig_manifold
+from trainer_si import Trainer
 import forward_maps as fwd_maps
 import argparse
 import matplotlib.pyplot as plt
@@ -27,13 +28,14 @@ parser.add_argument("--corruption", type=str, default="projection_coeff", help="
 parser.add_argument("--corruption_levels", type=float, nargs='+', help="corruption level")
 parser.add_argument("--fc_width", type=int, default=256, help="width of the feedforward network")
 parser.add_argument("--fc_depth", type=int, default=3, help="depth of the feedforward network")
-parser.add_argument("--train_steps", type=int, default=30000, help="number of channels in model")
+parser.add_argument("--train_steps", type=int, default=20000, help="number of channels in model")
 parser.add_argument("--batch_size", type=int, default=4000, help="batch size")
 parser.add_argument("--learning_rate", type=float, default=5e-4, help="learning rate")
+parser.add_argument("--update_transport_every", type=int, default=32, help="continued training count")
 parser.add_argument("--prefix", type=str, default='', help="prefix for folder name")
 parser.add_argument("--suffix", type=str, default='', help="suffix for folder name")
 parser.add_argument("--lr_scheduler", action='store_true', help="use scheduler if provided, else not")
-parser.add_argument("--clean_data_steps", type=int, default=20000, help="number of clean data steps to use in training")
+parser.add_argument("--clean_data_steps", type=int, default=-1, help="number of clean data steps to use in training")
 parser.add_argument("--ode_steps", type=int, default=40, help="ode steps")
 parser.add_argument("--save_and_sample_every", type=int, default=1000, help="save and sample every n steps")
 parser.add_argument("--model_path", type=str, default='latest', help="which model to load")
@@ -41,13 +43,14 @@ parser.add_argument("--resume_count", type=int, default=1, help="continued train
 
 # Parse arguments
 args = parser.parse_args()
-# args = parser.parse_args(['--corruption_levels', '1', '0.4',
+# args = parser.parse_args(['--corruption_levels', '1', '0.01',
 #                           '--suffix', 'test'])
 
 print(args)
 train_num_steps = args.train_steps
 save_and_sample_every = args.save_and_sample_every
 batch_size = args.batch_size
+update_transport_every = args.update_transport_every
 lr = args.learning_rate
 lr_scheduler = args.lr_scheduler
 
@@ -89,13 +92,13 @@ if use_follmer:
     deconvolver.loss_fn_cleandata = deconvolver.loss_fn_follmer_cleandata
 if args.dataset in ["checker", "moon"]:
     dim_in = 2
-    # pass DalaLoader as a dataset, will be checked in the trainer
-    dataset = DistributionDataLoader(distribution_dict[args.dataset](device=device), batch_size=batch_size, fwd_func=fwd_func, use_latents=use_latents)
-    if args.corruption.startswith("projection_vec"):
-        save_fig_fn = save_fig_2dsynt_vec
-    elif args.corruption.startswith("projection_coeff"):
+    dataloader = DistributionDataLoader(distribution_dict[args.dataset](device=device), batch_size=batch_size, fwd_func=fwd_func, use_latents=use_latents)
+    dataset=None
+    if args.corruption.startswith("projection_coeff"):
         save_fig_fn = save_fig_2dsynt_coeff
-    clean_data_valid = dataset.distribution.sample(20000).to(device)
+    else:
+        save_fig_fn = save_fig_2dsynt_vec
+    clean_data_valid = dataloader.distribution.sample(20000).to(device)
 elif args.dataset == 'gmm':
     dim_in = 2
     nmix = 4
@@ -106,12 +109,13 @@ elif args.dataset == 'gmm':
     mus_target = torch.stack([_compute_mu(i) for i in range(nmix)]).squeeze(1)
     var_target = torch.stack([torch.tensor([0.7, 0.7]) for i in range(nmix)])
     distribution = distribution_dict[args.dataset](mus_target, var_target, device=device, ndim=dim_in)
-    dataset = DistributionDataLoader(distribution, batch_size=batch_size, fwd_func=fwd_func, use_latents=use_latents)
+    dataloader = DistributionDataLoader(distribution, batch_size=batch_size, fwd_func=fwd_func, use_latents=use_latents)
+    dataset = None
     if args.corruption.startswith("projection_vec"):
         save_fig_fn = save_fig_2dsynt_vec
     elif args.corruption.startswith("projection_coeff"):
         save_fig_fn = save_fig_2dsynt_coeff
-    clean_data_valid = dataset.distribution.sample(10000).to(device)
+    clean_data_valid = dataloader.distribution.sample(10000).to(device)
 elif args.dataset == "manifold_ds":
     dim_in = 5
     dataset_path = f"/mnt/home/jhan/diffusion-priors/experiments/manifold/manifold_dataset_eps{corruption_levels[1]:0.2f}.npz"
@@ -121,7 +125,7 @@ elif args.dataset == "manifold_ds":
     elif args.corruption.startswith("projection_coeff"):
         obs_type = "coeff"
     dataset = ManifoldDataset(dataset_path, obs_type)
-    # dl = infinite_dataloader(DataLoader(dataset, batch_size = batch_size, shuffle = True, pin_memory = True, num_workers = 0, drop_last = True))
+    dataloader = None
     save_fig_fn = save_fig_manifold
     clean_data_valid = dataset.x_data.to(device)
 else:
@@ -143,10 +147,12 @@ valid_data_plot = (clean_data_valid, corrupted_valid_plot, latents_valid)
 b =  FeedForwardwithEMB(dim_in, 64, [args.fc_width]*args.fc_depth, latent_dim=latent_dim, use_follmer=use_follmer).to(device)
 print("Parameter count : ", count_parameters(b))
 
-trainer = TrainerMLP(model=b,
+trainer = Trainer(model=b,
         deconvolver=deconvolver,
-        dataset = dataset,
+        dataloader=dataloader,
+        dataset=dataset,
         train_batch_size = batch_size,
+        update_transport_every = update_transport_every,
         gradient_accumulate_every = 1,
         train_lr = lr,
         lr_scheduler = lr_scheduler,
@@ -154,8 +160,8 @@ trainer = TrainerMLP(model=b,
         save_and_sample_every= save_and_sample_every,
         results_folder=results_folder,
         clean_data_steps=args.clean_data_steps,
-        save_fig_fn=save_fig_fn,
-        valid_data_plot=valid_data_plot,
+        callback_fn=save_fig_fn,
+        validation_data=valid_data_plot,
         )
 
 losses = trainer.train()

@@ -8,7 +8,7 @@ import pandas as pd
 from utils import grab, push_to_device
 
 ## Expected signature of callback_fn
-# callback_fn(milestone, b, deconvolver, 
+# callback_fn(milestone, b, deconvolver,
 #               dataloader, validation_data, losses, device, results_folder)
 
 def get_samples(b, deconvolver, dataloader, device, validation_data):
@@ -25,7 +25,7 @@ def get_samples(b, deconvolver, dataloader, device, validation_data):
 
 def save_image(idx, b, deconvolver, dataloader, device, results_folder, losses, validation_data,  **kargs):
 
-    data, obs, latents, clean = get_samples(b, deconvolver, dataloader, device, validation_data)    
+    data, obs, latents, clean = get_samples(b, deconvolver, dataloader, device, validation_data)
     to_show = [data, obs, clean]
 
     fig, axar = plt.subplots(len(to_show), 8, figsize=(8, 3), sharex=True, sharey=True)
@@ -71,14 +71,12 @@ def save_mri_fig(idx, image, corrupted, clean, results_folder, **kargs):
     plt.savefig(f'{results_folder}/denoising_{idx}.png', dpi=300)
     plt.close()
 
-
-def save_fig_2dsynt_vec(idx, clean, corrupted, generated, results_folder, **kargs):
+def save_fig_2dsynt_vec(idx, b, deconvolver, dataloader, device, results_folder, losses, validation_data,  **kargs):
+    clean, corrupted, latents, generated = get_samples(b, deconvolver, dataloader, device, validation_data)
+    push_fwd_func = deconvolver.push_fwd
     c = '#62508f' # plot color
-    push_fwd_func = kargs.get('push_fwd_func', None)
-    if push_fwd_func is None:
-        fig, axes = plt.subplots(1,3, figsize=(15, 5))
-    else:
-        fig, axes = plt.subplots(1,4, figsize=(20, 5))
+    fig, axes = plt.subplots(1,4, figsize=(20, 5))
+
     clean = grab(clean)
     corrupted = grab(corrupted)
     generated = grab(generated)
@@ -98,12 +96,11 @@ def save_fig_2dsynt_vec(idx, clean, corrupted, generated, results_folder, **karg
     axes[2].set_xlim(-6,6), axes[1].set_ylim(-6,6)
     axes[2].set_xticks([-4,0,4]), axes[1].set_yticks([])
 
-    if push_fwd_func is not None:
-        generated_corrupted = push_fwd_func(torch.from_numpy(generated)).numpy()
-        axes[3].scatter(generated_corrupted[:,0], generated_corrupted[:,1], alpha = 0.03, c = c)
-        axes[3].set_title(r"Generated corrupted samples ", fontsize = 18)
-        axes[3].set_xlim(-6,6), axes[3].set_ylim(-6,6)
-        axes[3].set_xticks([-4,0,4]), axes[3].set_yticks([])
+    generated_corrupted = push_fwd_func(torch.from_numpy(generated)).numpy()
+    axes[3].scatter(generated_corrupted[:,0], generated_corrupted[:,1], alpha = 0.03, c = c)
+    axes[3].set_title(r"Generated corrupted samples ", fontsize = 18)
+    axes[3].set_xlim(-6,6), axes[3].set_ylim(-6,6)
+    axes[3].set_xticks([-4,0,4]), axes[3].set_yticks([])
 
     plt.subplots_adjust(wspace=0.0, hspace=0.0)  # Reduce spacing
     # plt.tight_layout()
@@ -112,22 +109,21 @@ def save_fig_2dsynt_vec(idx, clean, corrupted, generated, results_folder, **karg
 
 
 def save_fig_2dsynt_coeff(idx, b, deconvolver, dataloader, device, results_folder, losses, validation_data,  **kargs):
-# def save_fig_2dsynt_coeff(idx, clean, corrupted, generated, results_folder, **kargs):
-
     clean, corrupted, latents, generated = get_samples(b, deconvolver, dataloader, device, validation_data)
     push_fwd_func = deconvolver.push_fwd
 
     c = '#62508f' # plot color
-    push_fwd_func = kargs.get('push_fwd_func', None)
+    push_fwd_func = deconvolver.push_fwd
     # latents = kargs.get('latents', None)
     assert latents is not None, "Latents should be provided for this function"
     latents = latents.squeeze()
     assert latents.shape[-1] == 2, "Latents should be 2D for this function"
     angles_rad = grab(torch.atan2(latents[:, 1], latents[:, 0]))
-    if push_fwd_func is None:
-        fig, axes = plt.subplots(1,3, figsize=(15, 5))
-    else:
-        fig, axes = plt.subplots(1,4, figsize=(20, 5))
+    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+    # if push_fwd_func is None:
+    #     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    # else:
+    #     fig, axes = plt.subplots(1, 4, figsize=(20, 5))
     clean = grab(clean)
     corrupted = grab(corrupted)
     generated = grab(generated)
@@ -147,22 +143,22 @@ def save_fig_2dsynt_coeff(idx, b, deconvolver, dataloader, device, results_folde
     axes[2].set_xlim(-6,6), axes[1].set_ylim(-6,6)
     axes[2].set_xticks([-4,0,4]), axes[1].set_yticks([])
 
-    if push_fwd_func is not None:
-        generated_corrupted, latents_new = push_fwd_func(torch.from_numpy(generated), return_latents=True)
-        generated_corrupted = grab(generated_corrupted)
-        latents_new = latents_new.squeeze()
-        angles_rad_new = grab(torch.atan2(latents_new[:, 1], latents_new[:, 0]))
-        axes[3].scatter(generated_corrupted[:,0], angles_rad_new, alpha = 0.03, c = c)
-        axes[3].set_title(r"Generated corrupted samples ", fontsize = 18)
-        axes[3].set_xlim(-6,6), axes[3].set_ylim(-6,6)
-        axes[3].set_xticks([-4,0,4]), axes[3].set_yticks([])
+    generated_corrupted, latents_new = push_fwd_func(torch.from_numpy(generated), return_latents=True)
+    generated_corrupted = grab(generated_corrupted)
+    latents_new = latents_new.squeeze()
+    angles_rad_new = grab(torch.atan2(latents_new[:, 1], latents_new[:, 0]))
+    axes[3].scatter(generated_corrupted[:,0], angles_rad_new, alpha = 0.03, c = c)
+    axes[3].set_title(r"Generated corrupted samples ", fontsize = 18)
+    axes[3].set_xlim(-6,6), axes[3].set_ylim(-6,6)
+    axes[3].set_xticks([-4,0,4]), axes[3].set_yticks([])
 
     plt.subplots_adjust(wspace=0.0, hspace=0.0)  # Reduce spacing
     plt.savefig(f'{results_folder}/denoising_{idx}.png', dpi=300)
     plt.close()
 
 
-def save_fig_manifold(idx, clean, corrupted, generated, results_folder, push_fwd_func=None):
+def save_fig_manifold(idx, b, deconvolver, dataloader, device, results_folder, losses, validation_data,  **kargs):
+    clean, corrupted, latents, generated = get_samples(b, deconvolver, dataloader, device, validation_data)
     clean = grab(clean)
     corrupted = grab(corrupted)
     generated = grab(generated)
