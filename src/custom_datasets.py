@@ -9,6 +9,7 @@ import os
 from forward_maps import compute_At_y
 
 username = os.getenv('USER')
+download_dataset = False  # set to True if you want to download datasets
 
 class ImagesOnly(Dataset):
         def __init__(self, base_dataset):
@@ -104,30 +105,34 @@ cifar10_transforms_raw = transforms.Compose([
 
 
 # 2) Instantiate the datasets
-mnist_train = datasets.MNIST(
+def get_mnist_train_dataset():
+    return datasets.MNIST(
     root=f"/mnt/ceph/users/{username}/ML_data/mnist",      # download location
     train=True,
-    download=True,
+    download=download_dataset,
     transform=mnist_transforms
 )
-mnist_test = datasets.MNIST(
+def get_mnist_test_dataset():
+    return datasets.MNIST(
     root=f"/mnt/ceph/users/{username}/ML_data/mnist",
     train=False,
-    download=True,
+    download=download_dataset,
     transform=mnist_transforms
 )
 
-cifar10_train = datasets.CIFAR10(
+def get_cifar10_train_dataset():
+    return datasets.CIFAR10(
     root=f"/mnt/ceph/users/{username}/ML_data/cifar10",
     train=True,
-    download=True,
+    download=download_dataset,
     transform=cifar10_transforms
 )
 
-cifar10_test = datasets.CIFAR10(
+def get_cifar10_test_dataset():
+    return datasets.CIFAR10(
     root=f"/mnt/ceph/users/{username}/ML_data/cifar10",
     train=False,
-    download=True,
+    download=download_dataset,
     transform=transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize(
@@ -148,13 +153,14 @@ celebA_transforms = transforms.Compose([
 #                 split='train',
 #                 download=False, transform=celebA_transforms)
 
-celebA = ImageOnlyFolder(f"/mnt/ceph/users/{username}/ML_data/celebA/img_align_celeba/", \
+def get_celebA_dataset():
+    return ImageOnlyFolder(f"/mnt/ceph/users/{username}/ML_data/celebA/img_align_celeba/", \
                          transform=celebA_transforms)
 
 dataset_dict = {
-        'cifar10':[cifar10_train, 32, 3],
-        'mnist':[mnist_train, 32, 1],
-        'celebA':[celebA, 64, 3]
+        'cifar10':[get_cifar10_train_dataset(), 32, 3],
+        'mnist':[get_mnist_train_dataset(), 32, 1],
+        'celebA':[get_celebA_dataset(), 64, 3]
         }
 
 
@@ -221,18 +227,22 @@ class NumpyImageDataset(Dataset):
 
 
 class NumpyArrayDataset(Dataset):
-    def __init__(self, data_array):
+    def __init__(self, data_array, transform=None):
         self.data = torch.from_numpy(data_array).float()  # or .long() for labels
+        self.transform = transform
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
-        return self.data[idx]
+        if self.transform is not None:
+            return self.transform(self.data[idx])
+        else:
+            return self.data[idx]
 
 
 class CombinedNumpyDataset(Dataset):
-    def __init__(self, folder, mean=None, std=None, transform=None):
+    def __init__(self, folder, transform=None):
         import os
         files = os.listdir(folder)
         file_list = [os.path.join(folder, f) for f in files if f.endswith('.npy')]
