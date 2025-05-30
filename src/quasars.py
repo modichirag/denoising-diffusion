@@ -5,35 +5,8 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from utils import grab
+from karras_unet_1d import PixelShuffle1D, PixelUnShuffle1D
 
-
-class PixelShuffle1D(torch.nn.Module):
-    def __init__(self, upscale_factor):
-        super().__init__()
-        self.r = upscale_factor
-
-    def forward(self, x):
-        B, C_in, L = x.shape
-        r = self.r
-        assert C_in % r == 0, "Input channels must be divisible by upscale factor"
-        C_out = C_in // r
-        x = x.view(B, C_out, r, L)           # [B, C_out, r, L]
-        x = x.permute(0, 1, 3, 2)            # [B, C_out, L, r]
-        x = x.reshape(B, C_out, L * r)       # [B, C_out, L*r]
-        return x
-
-class PixelUnShuffle1D(torch.nn.Module):
-    def __init__(self, downscale_factor):
-        super().__init__()
-        self.r = downscale_factor
-
-    def forward(self, x):
-        B, C, L = x.shape
-        r = self.r
-        assert L % r == 0, "Length must be divisible by downscale factor"
-        x = x.view(B, C, L // r, r)
-        x = x.permute(0, 1, 3, 2).reshape(B, C * r, L // r)
-        return x
 
 
 def power_law_continuum(wavelength, alpha=1.0, A=1.0):
@@ -300,12 +273,11 @@ def apply_redshift(wavelength, flux, delta_z=0.001, meta=None):
     return new_wavelength, new_flux, meta
 
 
-def qso_model(wavelength, mean_spectra, std_spectra, downsample_factor=1, \
+def qso_model(wavelength, mean_spectra=None, std_spectra=None, downsample_factor=1, \
                    inv_delta_loglambda=20., vary_delta_loglambda=0.05, max_snr=30, min_snr=10):
 
     loglamb = torch.log(wavelength)
     delta_loglambda = loglamb[1] - loglamb[0]    
-
 
     def get_radius(idloglamb):
         sigma_lambda = 1/ idloglamb
@@ -319,41 +291,49 @@ def qso_model(wavelength, mean_spectra, std_spectra, downsample_factor=1, \
     def qso_corruption_single(flux, delta_z, n_features, amp, idloglamb, snr, radius):
         # _, flux, meta = apply_redshift(wavelength, flux, delta_z=delta_z)
         # _, flux, meta = add_absorption_features(wavelength, flux, n_features=n_features.item(), meta=meta)
-        _, flux, meta = add_flux_calibration_error(wavelength, flux, amplitude=amp)        
-        _, flux, meta = degrade_resolution(wavelength, flux, dloglambda=1/idloglamb, radius=radius)
-        _, flux, meta = add_gaussian_noise(wavelength, flux, SNR=snr)
+        _, flux, meta = add_flux_calibration_error(wavelength.to(flux.device), flux, amplitude=amp)        
+        _, flux, meta = degrade_resolution(wavelength.to(flux.device), flux, dloglambda=1/idloglamb, radius=radius)
+        _, flux, meta = add_gaussian_noise(wavelength.to(flux.device), flux, SNR=snr)
         return flux
 
 
-    def fwd(flux, return_latents = False):
+    def fwd(flux, return_latents = False, generator=None):
 
+        device = flux.device
+        was_2d = False
+        if flux.ndim == 2: # Add batch dimension if not present
+            was_2d = True
+            flux = flux.unsqueeze(0)
         if downsample_factor != 1:
             flux = PixelShuffle1D(downsample_factor)(flux)
         assert flux.shape[1] == 1
         flux = flux.squeeze(1)
 
-        flux = flux*std_spectra + mean_spectra
+        if mean_spectra is not None:
+            flux = flux*std_spectra + mean_spectra
         batch_size = flux.shape[0]
-        device = flux.device
 
         # generate random parameters
-        delta_z = torch.rand(batch_size, device=device)*0.01 - 0.005    # U(-0.005,0.005)
-        n_features = torch.randint(0, 5, (batch_size, ), device=device)
-        amp = torch.rand(batch_size, device=device)*0.1 - 0.05          # U(-0.05, 0.05)
-        # fwhm = torch.rand(batch_size)*20 + 10                     # U(10, 30)
-        scatter_idloglamb = (torch.rand(batch_size, device=device) - 0.5)*2*vary_delta_loglambda
+        delta_z = torch.rand(batch_size, device=device, generator=generator)*0.01 - 0.005    # U(-0.005,0.005)
+        n_features = torch.randint(0, 5, (batch_size, ), device=device, generator=generator)
+        amp = torch.rand(batch_size, device=device, generator=generator)*0.1 - 0.05          # U(-0.05, 0.05)
+        scatter_idloglamb = (torch.rand(batch_size, device=device, generator=generator) - 0.5)*2*vary_delta_loglambda
         idloglamb = (1 + scatter_idloglamb) * inv_delta_loglambda
-        snr = torch.rand(batch_size, device=device)*(max_snr - min_snr) + min_snr
+        snr = torch.rand(batch_size, device=device, generator=generator)*(max_snr - min_snr) + min_snr
         radius = int(get_radius(idloglamb).max().item())
 
         #vmap
         new_flux = torch.vmap(qso_corruption_single, (0, 0, 0, 0, 0, 0, None),\
              randomness='different')(flux, delta_z, n_features, amp, idloglamb, snr, radius)
 
-        new_flux = (new_flux - mean_spectra)/std_spectra
+        if mean_spectra is not None:
+            new_flux = (new_flux - mean_spectra)/std_spectra
         new_flux = new_flux.unsqueeze(1)
         if downsample_factor != 1:
             new_flux = PixelUnShuffle1D(downsample_factor)(new_flux)
+
+        if was_2d:
+            new_flux = new_flux.squeeze(0)
             
         if return_latents:
             return new_flux, new_flux
@@ -361,63 +341,6 @@ def qso_model(wavelength, mean_spectra, std_spectra, downsample_factor=1, \
             return new_flux
 
     return fwd
-
-
-
-# def qso_model_test(wavelength, mean_spectra, std_spectra, downsample_factor=1, \
-#                    resolution_degradation=20., max_snr=30, min_snr=10):
-
-
-#     def qso_corruption_single(flux, delta_z, n_features, amp, fwhm, snr, radius):
-#         # _, flux, meta = apply_redshift(wavelength, flux, delta_z=delta_z)
-#         # _, flux, meta = add_absorption_features(wavelength, flux, n_features=n_features.item(), meta=meta)
-#         # _, flux, meta = add_flux_calibration_error(wavelength, flux, amplitude=amp)        
-#         flux = torch.where(fwhm > 0, 
-#                         degrade_resolution(wavelength, flux, fwhm=fwhm, radius=radius)[1], 
-#                         flux)
-#         # _, flux, meta = degrade_resolution(wavelength, flux, fwhm=fwhm, radius=radius)
-#         _, flux, meta = add_gaussian_noise(wavelength, flux, SNR=snr)
-#         return flux
-        
-
-#     def fwd(flux, return_latents = False):
-
-#         if downsample_factor != 1:
-#             flux = PixelShuffle1D(downsample_factor)(flux)
-#         assert flux.shape[1] == 1
-#         flux = flux.squeeze(1)
-
-#         flux = flux*std_spectra + mean_spectra
-#         batch_size = flux.shape[0]
-#         device = flux.device
-        
-#         # generate random parameters
-#         delta_z = torch.rand(batch_size)*0.01 - 0.005 #np.random.uniform(-0.005,0.005)
-#         n_features = torch.randint(0, 5, (batch_size, ))
-#         amp = torch.rand(batch_size)*0.1 - 0.05 # np.random.uniform(-0.05, 0.05)
-#         fwhm = torch.rand(batch_size)*20 + 10 #np.random.uniform(10, 30)
-#         snr = torch.rand(batch_size)*(max_snr - min_snr) + min_snr
-
-#         # Testing
-#         fwhm =  fwhm*0. + resolution_degradation 
-#         radius = torch.ceil((4 *fwhm.to(device) / 2.355 / (wavelength[1] - wavelength[0])))
-#         radius = int(radius.max().item())        
-        
-#         new_flux = torch.vmap(qso_corruption_single, (0, 0, 0, 0, 0, 0, None),\
-#                                randomness='different')(flux, delta_z.to(device), \
-#                                 n_features.to(device), amp.to(device), fwhm.to(device), snr.to(device), radius)
-#         new_flux = (new_flux - mean_spectra)/std_spectra
-#         new_flux = new_flux.unsqueeze(1)
-#         if downsample_factor != 1:
-#             new_flux = PixelUnShuffle1D(downsample_factor)(new_flux)
-            
-#         if return_latents:
-#             return new_flux, new_flux
-#         else:
-#             return new_flux
-
-#     return fwd
-
 
 
 class qso_dataloader(torch.nn.Module):
@@ -459,43 +382,45 @@ class qso_dataloader(torch.nn.Module):
         return self.transform(x)
         
 
+def qso_callback(idx, b, deconvolver, dataloader, device, results_folder, losses=None, qdataloader=None, validation_data=None):
 
-def callback(istep, dataloader, denoiser, b, device, results_folder):
     err, err2 = 0, 0
     ns, bs = 10, 256
     for _ in range(ns):
-        x = dataloader(bs).to(device)
-        corr = denoiser.push_fwd(x, return_latents=False)
-        clean = denoiser.transport(b, corr, None)
-        err += ((x - corr)**2).sum().item()
-        err2 += ((x - clean)**2).sum().item()
+        data, obs, latents = next(dataloader)
+        data, obs = data.to(device), obs.to(device)
+        clean = deconvolver.transport(b, obs, None)
+        err += ((data - obs)**2).sum().item()
+        err2 += ((data - clean)**2).sum().item()
     err, err2 = (err/(ns*bs))**0.5, (err2/(ns*bs))**0.5
     rmse_file = os.path.join(results_folder, f"rmse.npy")
     if os.path.exists(rmse_file): 
-        rmse = np.load(rmse_file)
-        rmse = rmse.tolist()
+        rmse = np.load(rmse_file).tolist()
         rmse.append([err, err2])
-        np.save(rmse_file, np.array(rmse))
     else:
         rmse = [[err, err2]]
-        np.save(rmse_file, np.array(rmse))
+    np.save(rmse_file, np.array(rmse))
     print(f"RMSE of corrpted and clean samples is : {err:.4f}, {err2:.4f}")
 
-    wavelength = dataloader.wavelength
-    unnorm = dataloader.unnorm
-    fig, ax = plt.subplots(3, 1, figsize=(9,7), sharex=True)
-    for j in range(3):
-        i = np.random.randint(x.shape[0])
-        ax[j].plot(grab(wavelength), grab(unnorm(dataloader.inv_transform(x)[i])), 'k', lw=1.5, label="True")
-        ax[j].plot(grab(wavelength), grab(unnorm(dataloader.inv_transform(corr)[i])), 'r', alpha=0.7, ls='-', lw=1, label="Corrupted")
-        ax[j].plot(grab(wavelength), grab(unnorm(dataloader.inv_transform(clean)[i])), 'g', lw=2, alpha=0.5, ls="--", label="Cleaned")
-        ax[j].set_ylabel('Flux')
-        ax[j].grid(lw=0.3)
-        
-    plt.legend()
-    plt.xlabel("Wavelength")
-    plt.savefig(os.path.join(results_folder, f"sample-{istep}.png"), dpi=300)
-    for axis in ax:
-        axis.set_xlim(4300, 5500)
-    plt.savefig(os.path.join(results_folder, f"sample-zoom-{istep}.png"), dpi=300)
-    plt.close()
+    wavelength = grab(qdataloader.wavelength)
+    try:
+        fig, ax = plt.subplots(3, 1, figsize=(9,7), sharex=True)
+        for j in range(3):
+            i = np.random.randint(data.shape[0])
+            ax[j].plot(wavelength, grab((qdataloader.inv_transform(data)[i])), 'k', lw=1.5, label="True")
+            ax[j].plot(wavelength, grab((qdataloader.inv_transform(obs)[i])), 'r', alpha=0.7, ls='-', lw=1, label="Corrupted")
+            ax[j].plot(wavelength, grab((qdataloader.inv_transform(clean)[i])), 'g', lw=2, alpha=0.5, ls="--", label="Cleaned")
+            ax[j].set_ylabel('Flux')
+            ax[j].grid(lw=0.3)
+
+        plt.legend()
+        plt.xlabel("Wavelength")
+        plt.savefig(os.path.join(results_folder, f"sample-{idx}.png"), dpi=300)
+        for axis in ax:
+            axis.set_xlim(4300, 5500)
+        plt.savefig(os.path.join(results_folder, f"sample-zoom-{idx}.png"), dpi=300)
+        plt.close()
+
+    except Exception as e:
+        print(e)
+            
