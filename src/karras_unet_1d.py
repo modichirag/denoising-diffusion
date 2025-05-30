@@ -61,13 +61,16 @@ def interpolate_1d(x, length, mode = 'bilinear'):
 
 # mp activations
 # section 2.5
-
-class PixelShuffle1D(nn.Module):
+class PixelShuffle1D(torch.nn.Module):
     def __init__(self, upscale_factor):
         super().__init__()
         self.r = upscale_factor
 
     def forward(self, x):
+        was_2d = False
+        if len(x.shape) == 2:
+            x = x.unsqueeze(0)
+            was_2d = True
         B, C_in, L = x.shape
         r = self.r
         assert C_in % r == 0, "Input channels must be divisible by upscale factor"
@@ -75,19 +78,27 @@ class PixelShuffle1D(nn.Module):
         x = x.view(B, C_out, r, L)           # [B, C_out, r, L]
         x = x.permute(0, 1, 3, 2)            # [B, C_out, L, r]
         x = x.reshape(B, C_out, L * r)       # [B, C_out, L*r]
+        if was_2d:
+            x = x.squeeze(0)
         return x
 
-class PixelUnShuffle1D(nn.Module):
+class PixelUnShuffle1D(torch.nn.Module):
     def __init__(self, downscale_factor):
         super().__init__()
         self.r = downscale_factor
 
     def forward(self, x):
+        was_2d = False
+        if len(x.shape) == 2:
+            x = x.unsqueeze(0)
+            was_2d = True
         B, C, L = x.shape
         r = self.r
         assert L % r == 0, "Length must be divisible by downscale factor"
         x = x.view(B, C, L // r, r)
         x = x.permute(0, 1, 3, 2).reshape(B, C * r, L // r)
+        if was_2d:
+            x = x.squeeze(0)
         return x
 
 
@@ -644,59 +655,59 @@ class KarrasUnet1D(Module):
 
 # improvised MP Transformer
 
-class MPFeedForward(Module):
-    def __init__(
-        self,
-        *,
-        dim,
-        mult = 4,
-        mp_add_t = 0.3
-    ):
-        super().__init__()
-        dim_inner = int(dim * mult)
-        self.net = nn.Sequential(
-            PixelNorm(dim = 1),
-            Conv2d(dim, dim_inner, 1),
-            MPSiLU(),
-            Conv2d(dim_inner, dim, 1)
-        )
+# class MPFeedForward(Module):
+#     def __init__(
+#         self,
+#         *,
+#         dim,
+#         mult = 4,
+#         mp_add_t = 0.3
+#     ):
+#         super().__init__()
+#         dim_inner = int(dim * mult)
+#         self.net = nn.Sequential(
+#             PixelNorm(dim = 1),
+#             Conv2d(dim, dim_inner, 1),
+#             MPSiLU(),
+#             Conv2d(dim_inner, dim, 1)
+#         )
 
-        self.mp_add = MPAdd(t = mp_add_t)
+#         self.mp_add = MPAdd(t = mp_add_t)
 
-    def forward(self, x):
-        res = x
-        out = self.net(x)
-        return self.mp_add(out, res)
+#     def forward(self, x):
+#         res = x
+#         out = self.net(x)
+#         return self.mp_add(out, res)
 
-class MPImageTransformer(Module):
-    def __init__(
-        self,
-        *,
-        dim,
-        depth,
-        dim_head = 64,
-        heads = 8,
-        num_mem_kv = 4,
-        ff_mult = 4,
-        attn_flash = False,
-        residual_mp_add_t = 0.3
-    ):
-        super().__init__()
-        self.layers = ModuleList([])
+# class MPImageTransformer(Module):
+#     def __init__(
+#         self,
+#         *,
+#         dim,
+#         depth,
+#         dim_head = 64,
+#         heads = 8,
+#         num_mem_kv = 4,
+#         ff_mult = 4,
+#         attn_flash = False,
+#         residual_mp_add_t = 0.3
+#     ):
+#         super().__init__()
+#         self.layers = ModuleList([])
 
-        for _ in range(depth):
-            self.layers.append(ModuleList([
-                Attention(dim = dim, heads = heads, dim_head = dim_head, num_mem_kv = num_mem_kv, flash = attn_flash, mp_add_t = residual_mp_add_t),
-                MPFeedForward(dim = dim, mult = ff_mult, mp_add_t = residual_mp_add_t)
-            ]))
+#         for _ in range(depth):
+#             self.layers.append(ModuleList([
+#                 Attention(dim = dim, heads = heads, dim_head = dim_head, num_mem_kv = num_mem_kv, flash = attn_flash, mp_add_t = residual_mp_add_t),
+#                 MPFeedForward(dim = dim, mult = ff_mult, mp_add_t = residual_mp_add_t)
+#             ]))
 
-    def forward(self, x):
+#     def forward(self, x):
 
-        for attn, ff in self.layers:
-            x = attn(x)
-            x = ff(x)
+#         for attn, ff in self.layers:
+#             x = attn(x)
+#             x = ff(x)
 
-        return x
+#         return x
 
 # example
 
