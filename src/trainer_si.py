@@ -316,18 +316,3 @@ class Trainer:
             print('training complete')
 
         return losses
-
-
-
-                                    # milestone = self.step // self.save_and_sample_every
-                                    # data, obs, latents = next(self.dl)
-                                    # data = data.to(self.device)
-                                    # obs = obs.to(self.device)
-                                    # latents = latents.to(self.device)
-                                    # latents = latents if self.deconvolver.use_latents else None
-                                    # clean = self.deconvolver.transport(model_to_use, obs, latents)
-                                    # try:
-                                    #     iutils.save_fig(milestone, data, obs, clean, self.results_folder)
-                                    # except Exception as e:
-                                    #     print("Exception in saving data")
-                                    #     print(e)

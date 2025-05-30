@@ -34,25 +34,23 @@ def save_image(idx, b, deconvolver, dataloader, device, results_folder, losses, 
         for j in range(8):
             ax = axar[i, j]
             im = ax.imshow(grab(to_show[i][j]).transpose(1, 2, 0), vmax=vmax, vmin=vmin)
-    axar[0, 0].set_ylabel('original\nImage')
+    axar[0, 0].set_ylabel('Original')
     axar[1, 0].set_ylabel(f'Corrupted')
     axar[2, 0].set_ylabel(f'Clean')
     for axis in axar.flatten():
         axis.set_xticks([])
         axis.set_yticks([])
-    plt.subplots_adjust(wspace=0.0, hspace=0.0)  # Reduce spacing
+    plt.subplots_adjust(wspace=0.0, hspace=0.0) 
     plt.savefig(f'{results_folder}/denoising_{idx}.png', dpi=300)
     plt.close()
 
 
+def save_mri_pix(idx, b, deconvolver, dataloader, device, results_folder, losses, validation_data,  **kargs):
 
-def save_mri_fig(idx, image, corrupted, clean, results_folder, **kargs):
-
-    from mri_data import fourier_to_pix
-    shuffler = torch.nn.PixelShuffle(4)
-    to_show = [fourier_to_pix(image), \
-               shuffler(corrupted).permute(0, 2, 3, 1), \
-            shuffler(clean).permute(0, 2, 3, 1)]
+    data, obs, latents, clean = get_samples(b, deconvolver, dataloader, device, validation_data)
+    downsample_factor = int(obs.shape[1]**0.5)
+    shuffler = torch.nn.PixelShuffle(downsample_factor)
+    to_show = [shuffler(data).permute(0, 2, 3, 1), shuffler(obs).permute(0, 2, 3, 1), shuffler(clean).permute(0, 2, 3, 1)]
 
     fig, axar = plt.subplots(len(to_show), 8, figsize=(8, 3), sharex=True, sharey=True)
     vmax, vmin = None, None
@@ -60,14 +58,13 @@ def save_mri_fig(idx, image, corrupted, clean, results_folder, **kargs):
         for j in range(8):
             ax = axar[i, j]
             im = ax.imshow(grab(to_show[i][j]), vmax=vmax, vmin=vmin)
-    axar[0, 0].set_ylabel('Original\nImage')
-    axar[1, 0].set_ylabel(f'Corrupted\n$\sigma')
+    axar[0, 0].set_ylabel('Original')
+    axar[1, 0].set_ylabel(f'Corrupted')
     axar[2, 0].set_ylabel(f'Clean')
     for axis in axar.flatten():
         axis.set_xticks([])
         axis.set_yticks([])
-    plt.subplots_adjust(wspace=0.0, hspace=0.0)  # Reduce spacing
-    # plt.tight_layout()
+    plt.subplots_adjust(wspace=0.0, hspace=0.0) 
     plt.savefig(f'{results_folder}/denoising_{idx}.png', dpi=300)
     plt.close()
 
