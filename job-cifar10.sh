@@ -30,4 +30,3 @@ time python -u deconvolving_interpolants.py \
                 --corruption_level $clevel $nlevel $mlevel --train_steps $trainsteps \
                 --channels $channels  --ode_steps 64 --alpha 0.9 --resamples 2  \
                 --lr_scheduler --suffix "v3" --learning_rate 0.0005
-

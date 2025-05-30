@@ -15,6 +15,7 @@ from networks import ConditionalDhariwalUNet
 from interpolant_utils import DeconvolvingInterpolant
 from forward_maps import corruption_dict, parse_latents
 from trainer_si import Trainer, get_worker_info
+from callbacks import save_mri_pix
 import argparse
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -41,6 +42,7 @@ parser.add_argument("--alpha", type=float, default=0.9, help="probability of usi
 parser.add_argument("--resamples", type=int, default=1, help="number of resamplings")
 parser.add_argument("--multiview", action='store_true', help="change corruption every epoch if provided, else not")
 parser.add_argument("--noise_masked", action='store_true', help="add noise to masked region, else not")
+parser.add_argument("--max_pos_embedding", type=int, default=2, help="number of resamplings")
 
 
 args = parser.parse_args()
@@ -112,7 +114,8 @@ if local_rank == 0:
 
 # Setup model
 b =  ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim,
-                        model_channels=model_channels, gated=gated).to(device)
+                            model_channels=model_channels, gated=gated, \
+                            max_pos_embedding=args.max_pos_embedding).to(device)
 b = DDP(b, device_ids=[local_rank], find_unused_parameters=False)     
 print("Parameter count : ", count_parameters(b))
 deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, \
@@ -135,7 +138,8 @@ trainer = Trainer(model=b,
                     train_num_steps = train_num_steps,
                     save_and_sample_every= save_and_sample_every,
                     results_folder=results_folder, 
-                    warmup_fraction=0.05
+                    warmup_fraction=0.05, 
+                    callback_fn=save_mri_pix,
         )
 
 trainer.train()
