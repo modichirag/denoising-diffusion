@@ -14,6 +14,7 @@ from ema_pytorch import EMA
 
 from transformers import get_cosine_schedule_with_warmup
 from utils import infinite_dataloader, divisible_by, push_to_device
+from callbacks import save_losses_fig
 
 typedict = {"fp16":torch.float16, "fp32":torch.float32, "bf16":torch.bfloat16}
 
@@ -37,7 +38,7 @@ def get_worker_info():
 class Trainer:
     def __init__(
             self,
-            model, 
+            model,
             deconvolver,
             optimizer = None,
             dataset = None,
@@ -49,7 +50,7 @@ class Trainer:
             update_transport_every = 1,
             train_lr = 1e-4,
             lr_scheduler = False,
-            warmup_fraction = 0.10, 
+            warmup_fraction = 0.10,
             train_num_steps = 100000,
             ema_update_every = 10,
             ema_decay = 0.995,
@@ -95,10 +96,10 @@ class Trainer:
             self.ds = dataset
             num_workers = cpu_count() if num_workers is None else num_workers
             if dataset_sampler is not None:
-                dl = DataLoader(self.ds, batch_size = train_batch_size, shuffle = True, 
+                dl = DataLoader(self.ds, batch_size = train_batch_size, shuffle = True,
                                 pin_memory = True, num_workers = num_workers) #cpu_count())
             else:
-                dl = DataLoader(self.ds, batch_size = train_batch_size, sampler = dataset_sampler, 
+                dl = DataLoader(self.ds, batch_size = train_batch_size, sampler = dataset_sampler,
                                 pin_memory = True, num_workers = num_workers)
             self.dl = infinite_dataloader(dl)
 
@@ -111,7 +112,7 @@ class Trainer:
             else:
                 self.opt = AdamW(model.parameters(), lr = train_lr, betas = adam_betas, weight_decay=weight_decay)
         if lr_scheduler is not None:
-            num_warmup_steps = int(warmup_fraction * train_num_steps) 
+            num_warmup_steps = int(warmup_fraction * train_num_steps)
             self.lr_scheduler = get_cosine_schedule_with_warmup(
                 self.opt,
                 num_warmup_steps=num_warmup_steps,
@@ -142,7 +143,7 @@ class Trainer:
             'step': self.step,
             'opt': self.opt.state_dict(),
             'ema': self.ema.state_dict(),
-        }    
+        }
         if hasattr(self.model, "_orig_mod"):
             data['model'] = self.model._orig_mod.state_dict()
         elif isinstance(self.model, DDP):
@@ -156,7 +157,7 @@ class Trainer:
             data['ema_model'] = self.ema.ema_model.module.state_dict()
         else:
             data['ema_model'] = self.ema.ema_model.state_dict()
-        
+
         if self.lr_scheduler is not None:
             data['scheduler'] = self.lr_scheduler.state_dict()
 
@@ -196,7 +197,7 @@ class Trainer:
             print(f"Setting up transport map to be updated every {self.update_transport_every} steps")
             transport_map = copy.deepcopy(self.model.module) if isinstance(self.model, DDP) \
                         else copy.deepcopy(self.model)
-            transport_map.eval()  
+            transport_map.eval()
         else:
             transport_map = None
 
@@ -223,10 +224,10 @@ class Trainer:
                     for p in self.model.parameters():
                         if p.grad is not None and not p.grad.is_contiguous():
                             p.grad = p.grad.contiguous()
-                    
+
                 pbar.set_description(f'loss: {total_loss:.4f}')
                 losses.append(total_loss)
-                
+
                 torch.cuda.synchronize()
                 _ = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
                 self.opt.step()
@@ -234,7 +235,7 @@ class Trainer:
                 if self.lr_scheduler is not None:
                     self.lr_scheduler.step()
                 torch.cuda.synchronize()
-                
+
                 # If loss spikes, reset model and optimizer
                 reset_model = False
                 recent_losses.append(total_loss)
@@ -255,9 +256,9 @@ class Trainer:
                     # Update transport map if needed
                     if (self.step % self.update_transport_every == 0) & (transport_map is not None):
                         if isinstance(self.ema.ema_model, DDP) :
-                            transport_map.load_state_dict(self.ema.ema_model.module.state_dict()) 
+                            transport_map.load_state_dict(self.ema.ema_model.module.state_dict())
                         else:
-                            transport_map.load_state_dict(self.ema.ema_model.state_dict()) 
+                            transport_map.load_state_dict(self.ema.ema_model.state_dict())
                         transport_map.eval()
 
                     if self.master_process:
@@ -281,32 +282,33 @@ class Trainer:
                                 with torch.no_grad(), torch.autocast(device_type=device, dtype=typedict[self.mixed_precision_type]):
                                     if self.callback_fn is not None:
                                         milestone=self.step // self.save_and_sample_every
-                                        self.callback_fn(idx = milestone, 
-                                                        b = model_to_use, deconvolver = self.deconvolver, 
+                                        self.callback_fn(idx = milestone,
+                                                        b = model_to_use, deconvolver = self.deconvolver,
                                                         dataloader = self.dl, validation_data = self.validation_data,
-                                                        losses = losses, device = self.device, 
+                                                        losses = losses, device = self.device,
                                                         results_folder = self.results_folder)
                             except Exception as e:
                                 print("Exception in executing callback function\n", e)
                             print(f"Saved model at step {self.step}")
-                
+
                 pbar.update(1)
                 torch.cuda.synchronize()
-                
+
         # Save final model
         if self.master_process:
             np.save(f"{self.results_folder}/losses", losses)
             self.save("latest")
+            save_losses_fig(losses, self.results_folder)
             self.ema.ema_model.eval()
             model_to_use = self.ema.ema_model.module if isinstance(self.ema.ema_model, DDP) \
                                 else self.ema.ema_model
             try:
                 with torch.no_grad(), torch.autocast(device_type=device, dtype=typedict[self.mixed_precision_type]):
                     if self.callback_fn is not None:
-                        self.callback_fn(idx = "fin", 
-                                        b = model_to_use, deconvolver = self.deconvolver, 
+                        self.callback_fn(idx = "fin",
+                                        b = model_to_use, deconvolver = self.deconvolver,
                                         dataloader = self.dl, validation_data = self.validation_data,
-                                        losses = losses, device=self.device, 
+                                        losses = losses, device=self.device,
                                         results_folder = self.results_folder)
             except Exception as e:
                 print("Exception in executing callback function\n", e)
