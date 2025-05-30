@@ -43,6 +43,7 @@ parser.add_argument("--resamples", type=int, default=1, help="number of resampli
 parser.add_argument("--multiview", action='store_true', help="change corruption every epoch if provided, else not")
 parser.add_argument("--noise_masked", action='store_true', help="add noise to masked region, else not")
 parser.add_argument("--max_pos_embedding", type=int, default=2, help="number of resamplings")
+parser.add_argument("--transport_steps", type=int, default=1, help="update transport map every n steps")
 
 
 args = parser.parse_args()
@@ -140,6 +141,7 @@ trainer = Trainer(model=b,
                     results_folder=results_folder, 
                     warmup_fraction=0.05, 
                     callback_fn=save_mri_pix,
+                    update_transport_every=args.transport_steps,
         )
 
 trainer.train()
