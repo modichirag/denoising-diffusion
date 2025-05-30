@@ -64,7 +64,8 @@ class Trainer:
             milestone = None,
             clean_data_steps = -1, # not using clean data
             callback_fn = None,
-            validation_data = None
+            validation_data = None, 
+            callback_kwargs = {},
     ):
         super().__init__()
 
@@ -86,6 +87,7 @@ class Trainer:
         self.clean_data_steps = clean_data_steps
         self.callback_fn = callback_fn
         self.validation_data = validation_data
+        self.callback_kwargs = callback_kwargs
 
         # dataset and dataloader
         if (dataset is None) and (dataloader is None):
@@ -255,10 +257,10 @@ class Trainer:
 
                     # Update transport map if needed
                     if (self.step % self.update_transport_every == 0) & (transport_map is not None):
-                        if isinstance(self.ema.ema_model, DDP) :
-                            transport_map.load_state_dict(self.ema.ema_model.module.state_dict())
+                        if isinstance(self.model, DDP) :
+                            transport_map.load_state_dict(self.model.module.state_dict())
                         else:
-                            transport_map.load_state_dict(self.ema.ema_model.state_dict())
+                            transport_map.load_state_dict(self.model.state_dict())
                         transport_map.eval()
 
                     if self.master_process:
@@ -286,7 +288,7 @@ class Trainer:
                                                         b = model_to_use, deconvolver = self.deconvolver,
                                                         dataloader = self.dl, validation_data = self.validation_data,
                                                         losses = losses, device = self.device,
-                                                        results_folder = self.results_folder)
+                                                        results_folder = self.results_folder, **self.callback_kwargs)
                             except Exception as e:
                                 print("Exception in executing callback function\n", e)
                             print(f"Saved model at step {self.step}")
@@ -309,7 +311,7 @@ class Trainer:
                                         b = model_to_use, deconvolver = self.deconvolver,
                                         dataloader = self.dl, validation_data = self.validation_data,
                                         losses = losses, device=self.device,
-                                        results_folder = self.results_folder)
+                                        results_folder = self.results_folder, **self.callback_kwargs)
             except Exception as e:
                 print("Exception in executing callback function\n", e)
 
