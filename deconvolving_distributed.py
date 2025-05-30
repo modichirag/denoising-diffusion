@@ -14,6 +14,7 @@ from networks import ConditionalDhariwalUNet
 from interpolant_utils import DeconvolvingInterpolant
 import forward_maps as fwd_maps
 from trainer_si import Trainer, get_worker_info
+from callbacks import save_image
 import argparse
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -38,6 +39,7 @@ parser.add_argument("--alpha", type=float, default=1., help="probability of usin
 parser.add_argument("--resamples", type=int, default=1, help="number of resamplings")
 parser.add_argument("--multiview", action='store_true', help="change corruption every epoch if provided, else not")
 parser.add_argument("--max_pos_embedding", type=int, default=2, help="number of resamplings")
+parser.add_argument("--transport_steps", type=int, default=1, help="update transport map every n steps")
 
 args = parser.parse_args()
 print(args)
@@ -129,6 +131,8 @@ trainer = Trainer(model=b,
         save_and_sample_every= save_and_sample_every,
         results_folder=results_folder, 
         warmup_fraction=0.05,
+        update_transport_steps=args.transport_steps,
+        callback_fn =save_image,
         # mixed_precision_type = 'fp32',
         )
 
