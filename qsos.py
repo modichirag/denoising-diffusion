@@ -110,8 +110,8 @@ if local_rank == 0:
 #                dim=16, dim_max=32, num_blocks_per_stage=1, num_downsamples=2).to(device)
 b = KarrasUnet1D(seq_len=D//downsample_factor, channels=downsample_factor, \
                   dim=16, num_blocks_per_stage=2, num_downsamples=3, attn_res=(32)).to(device)
-b = torch.compile(b)
-b = DDP(b, device_ids=[local_rank], find_unused_parameters=False)     
+# b = torch.compile(b)
+# b = DDP(b, device_ids=[local_rank], find_unused_parameters=False)     
 print(f"Number of parameters : {count_parameters(b)[0]:0.3f} million")
 deconvolver = DeconvolvingInterpolant(fwd_func, use_latents, n_steps=args.ode_steps, 
                                    alpha=args.alpha, resamples=args.resamples).to(device)
@@ -122,22 +122,24 @@ dataset_sampler = DistributedSampler(corrupt_dataset, num_replicas=world_size, \
 
 print("Launch Train")
 trainer = Trainer(model=b, 
-        deconvolver=deconvolver, 
-        dataset = corrupt_dataset,
-        dataset_sampler=dataset_sampler,
-        train_batch_size = train_batch_size,
-        gradient_accumulate_every = gradient_accumulate_every,
-        train_lr = lr,
-        lr_scheduler = lr_scheduler,
-        train_num_steps = train_num_steps,
-        save_and_sample_every= save_and_sample_every,
-        results_folder=results_folder, 
-        warmup_fraction=0.05,
-        update_transport_every=args.transport_steps,
-        callback_fn = qso_callback,
-        callback_kwargs = {"qdataloader": qdataloader}
-        # mixed_precision_type = 'fp32',
-        )
+            ddp = ddp,
+            compile_model=True,
+            deconvolver=deconvolver, 
+            dataset = corrupt_dataset,
+            dataset_sampler=dataset_sampler,
+            train_batch_size = train_batch_size,
+            gradient_accumulate_every = gradient_accumulate_every,
+            train_lr = lr,
+            lr_scheduler = lr_scheduler,
+            train_num_steps = train_num_steps,
+            save_and_sample_every= save_and_sample_every,
+            results_folder=results_folder, 
+            warmup_fraction=0.05,
+            update_transport_every=args.transport_steps,
+            callback_fn = qso_callback,
+            callback_kwargs = {"qdataloader": qdataloader}
+            # mixed_precision_type = 'fp32',
+            )
 
 trainer.train()
 

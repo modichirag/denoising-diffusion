@@ -108,7 +108,7 @@ if local_rank == 0:
 b =  ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim,
                             model_channels=model_channels, gated=gated, \
                             max_pos_embedding=args.max_pos_embedding).to(device)
-b = DDP(b, device_ids=[local_rank], find_unused_parameters=False)     
+# b = DDP(b, device_ids=[local_rank], find_unused_parameters=False)     
 print("Parameter count : ", count_parameters(b))
 deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, \
                                     alpha=args.alpha, resamples=args.resamples, \
@@ -120,19 +120,20 @@ dataset_sampler = DistributedSampler(corrupt_dataset, num_replicas=world_size, \
 
 print("Launch Train")
 trainer = Trainer(model=b, 
-        deconvolver=deconvolver, 
-        dataset = corrupt_dataset,
-        dataset_sampler=dataset_sampler,
-        train_batch_size = train_batch_size,
-        gradient_accumulate_every = gradient_accumulate_every,
-        train_lr = lr,
-        lr_scheduler = lr_scheduler,
-        train_num_steps = train_num_steps,
-        save_and_sample_every= save_and_sample_every,
-        results_folder=results_folder, 
-        warmup_fraction=0.05,
-        update_transport_steps=args.transport_steps,
-        callback_fn =save_image,
+                ddp = ddp,
+                deconvolver=deconvolver, 
+                dataset = corrupt_dataset,
+                dataset_sampler=dataset_sampler,
+                train_batch_size = train_batch_size,
+                gradient_accumulate_every = gradient_accumulate_every,
+                train_lr = lr,
+                lr_scheduler = lr_scheduler,
+                train_num_steps = train_num_steps,
+                save_and_sample_every= save_and_sample_every,
+                results_folder=results_folder, 
+                warmup_fraction=0.05,
+                update_transport_steps=args.transport_steps,
+                callback_fn =save_image,
         # mixed_precision_type = 'fp32',
         )
 
