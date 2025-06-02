@@ -13,7 +13,7 @@ from tqdm.auto import tqdm
 from ema_pytorch import EMA
 
 from transformers import get_cosine_schedule_with_warmup
-from utils import infinite_dataloader, divisible_by, push_to_device
+from utils import infinite_dataloader, divisible_by, push_to_device, remove_all_prefix
 from callbacks import save_losses_fig
 
 typedict = {"fp16":torch.float16, "fp32":torch.float32, "bf16":torch.bfloat16}
@@ -31,7 +31,7 @@ def get_worker_info():
         rank = 0
         local_rank = 0
         world_size = 1
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = 'cuda:0' if torch.cuda.is_available() else "cpu"
     return world_size, rank, local_rank, device
 
 # trainer class
@@ -45,6 +45,8 @@ class Trainer:
             dataloader = None,
             dataset_sampler = None,
             *,
+            compile_model = False,
+            ddp = False,
             train_batch_size = 16,
             gradient_accumulate_every = 1,
             update_transport_every = 1,
@@ -70,12 +72,23 @@ class Trainer:
         super().__init__()
 
         # model
-        self.model = model
+        self.raw_model = model
         self.deconvolver = deconvolver
-
         self.world_size, self.rank, self.local_rank, self.device = get_worker_info()
         self.master_process = self.rank == 0
 
+        self.compile_model = compile_model
+        self.ddp = ddp
+        model = torch.compile(self.raw_model) if self.compile_model else self.raw_model
+        model = DDP(model, device_ids=[self.local_rank], find_unused_parameters=False) if self.ddp else model
+        self.model = model
+        # if self.compile_model or self.ddp:
+        #     print("Compiling model for faster training")
+        #     model = torch.compile(self.raw_model) if self.compile_model else self.raw_model
+        #     model = DDP(model, device_ids=[self.local_rank], find_unused_parameters=False) if self.ddp else model
+        #     self.model = model
+        # else:
+        #     self.model = self.raw_model
         # sampling and training hyperparameters
         self.save_and_sample_every = save_and_sample_every
         self.batch_size = train_batch_size
@@ -125,7 +138,7 @@ class Trainer:
 
         # for logging results in a folder periodically
         if self.master_process:
-            self.ema = EMA(model, beta = ema_decay, update_every = ema_update_every)
+            self.ema = EMA(self.raw_model, beta = ema_decay, update_every = ema_update_every)
             self.ema.to(self.device)
 
         self.results_folder = Path(results_folder)
@@ -145,20 +158,21 @@ class Trainer:
             'step': self.step,
             'opt': self.opt.state_dict(),
             'ema': self.ema.state_dict(),
+            'model': self.raw_model.state_dict(),
         }
-        if hasattr(self.model, "_orig_mod"):
-            data['model'] = self.model._orig_mod.state_dict()
-        elif isinstance(self.model, DDP):
-            data['model'] = self.model.module.state_dict()
-        else:
-            data['model'] = self.model.state_dict()
+        # if hasattr(self.model, "_orig_mod"):
+        #     data['model'] = self.model._orig_mod.state_dict()
+        # elif isinstance(self.model, DDP):
+        #     data['model'] = self.model.module.state_dict()
+        # else:
+        #     data['model'] = self.model.state_dict()
 
-        if hasattr(self.ema.ema_model, "_orig_mod"):
-            data['ema_model'] = self.ema.ema_model._orig_mod.state_dict()
-        elif isinstance(self.ema.ema_model, DDP):
-            data['ema_model'] = self.ema.ema_model.module.state_dict()
-        else:
-            data['ema_model'] = self.ema.ema_model.state_dict()
+        # if hasattr(self.ema.ema_model, "_orig_mod"):
+        #     data['ema_model'] = self.ema.ema_model._orig_mod.state_dict()
+        # elif isinstance(self.ema.ema_model, DDP):
+        #     data['ema_model'] = self.ema.ema_model.module.state_dict()
+        # else:
+        #     data['ema_model'] = self.ema.ema_model.state_dict()
 
         if self.lr_scheduler is not None:
             data['scheduler'] = self.lr_scheduler.state_dict()
@@ -176,7 +190,17 @@ class Trainer:
             data = torch.load(str(self.results_folder / f'model-{milestone}.pt'), \
                           map_location=device, weights_only=True)
             print(f"Loading model from {str(self.results_folder / f'model-{milestone}.pt')}")
-        self.model.load_state_dict(data['model'])
+        # self.model.load_state_dict(data['model'])
+        try:
+            self.raw_model.load_state_dict(data['model'])
+        except Exception as e:
+            print("Exception in loading model ", e)
+            print("Trying again by removing all prefixes from state_dict keys")
+            self.raw_model.load_state_dict(remove_all_prefix(data['model']))
+
+        model = torch.compile(self.raw_model) if self.compile_model else self.raw_model
+        model = DDP(model, device_ids=[self.local_rank], find_unused_parameters=False) if self.ddp else model
+        self.model = model
         self.step = data['step']
         self.opt.load_state_dict(data['opt'])
         if ('scheduler' in data.keys()) & (self.lr_scheduler is not None):
@@ -186,7 +210,7 @@ class Trainer:
             self.ema.load_state_dict(data["ema"])
         if 'version' in data:
             print(f"loading from version {data['version']}")
-        print("Successfully loaded model")
+        print("Successfully loaded model from milestone", milestone)
 
 
     def train(self, loss_threshold=10.0, window=11):
@@ -219,8 +243,9 @@ class Trainer:
                         else:
                             loss = self.deconvolver.loss_fn(self.model, obs, latents, b=transport_map).mean()
                         loss = loss / self.gradient_accumulate_every
-                        total_loss += loss.item()
-
+                    curr_loss = loss.detach()
+                    if self.ddp : dist.all_reduce(curr_loss, op=dist.ReduceOp.AVG)
+                    total_loss += curr_loss.item()
                     loss.backward()
 
                     for p in self.model.parameters():
@@ -238,6 +263,9 @@ class Trainer:
                     self.lr_scheduler.step()
                 torch.cuda.synchronize()
 
+                # if (self.step !=0 ) & (( self.step % 50) == 0):
+                #     print("loading model test")    
+                #     self.load("best")
                 # If loss spikes, reset model and optimizer
                 reset_model = False
                 recent_losses.append(total_loss)
@@ -278,8 +306,9 @@ class Trainer:
                                 print(f"New best model at step {self.step} with loss {min_loss:.4f}")
 
                             self.ema.ema_model.eval()
-                            model_to_use = self.ema.ema_model.module if isinstance(self.ema.ema_model, DDP) \
-                                                else self.ema.ema_model
+                            model_to_use = self.ema.ema_model
+                            # model_to_use = self.ema.ema_model.module if isinstance(self.ema.ema_model, DDP) \
+                            #                     else self.ema.ema_model
                             try:
                                 with torch.no_grad(), torch.autocast(device_type=device, dtype=typedict[self.mixed_precision_type]):
                                     if self.callback_fn is not None:
