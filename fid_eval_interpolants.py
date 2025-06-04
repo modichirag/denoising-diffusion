@@ -44,6 +44,7 @@ else:
 
 # Parse arguments
 dataset, D, nc = dataset_dict[args.dataset]
+dataset = dataset()
 dl = infinite_dataloader(DataLoader(ImagesOnly(dataset), 
                                     batch_size = args.batch_size, \
                                     shuffle = True, pin_memory = True, num_workers = 1))

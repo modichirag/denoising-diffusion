@@ -158,9 +158,9 @@ def get_celebA_dataset():
                          transform=celebA_transforms)
 
 dataset_dict = {
-        'cifar10':[get_cifar10_train_dataset(), 32, 3],
-        'mnist':[get_mnist_train_dataset(), 32, 1],
-        'celebA':[get_celebA_dataset(), 64, 3]
+        'cifar10':[get_cifar10_train_dataset, 32, 3],
+        'mnist':[get_mnist_train_dataset, 32, 1],
+        'celebA':[get_celebA_dataset, 64, 3]
         }
 
 

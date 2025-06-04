@@ -48,6 +48,7 @@ else:
 
 # Parse arguments
 dataset, D, nc = dataset_dict[args.dataset]
+dataset = dataset()
 image_dataset = ImagesOnly(dataset)
 model_channels = args.channels #192
 train_num_steps = args.train_steps
