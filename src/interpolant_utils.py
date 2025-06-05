@@ -50,7 +50,7 @@ class MLPVelocityField(torch.nn.Module):
 
 class DeconvolvingInterpolant(torch.nn.Module):
 
-    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1, diffusion_coef=None):
+    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1, diffusion_coef=None, gamma_scale=0.0):
         super().__init__()
         self.push_fwd = push_fwd
         self.n_steps = n_steps
@@ -60,12 +60,14 @@ class DeconvolvingInterpolant(torch.nn.Module):
         self.alpha = alpha
         self.resamples = resamples
         self.diffusion_coef = diffusion_coef
+        self.gamma_scale = gamma_scale
         if use_latents:
             print("Using latents for deonvolving")
 
     def loss_fn(self, v, x, latent=None, x0=None, b=None):
         batch_size = x.shape[0]
         loss = 0.
+        # idx = [torch.randperm(batch_size)]
 
         if x0 is None: # x0 is the cleandata, use if provided
             if b is not None:
@@ -76,7 +78,8 @@ class DeconvolvingInterpolant(torch.nn.Module):
         for i in range(self.resamples):
             x1, latent1 = self.push_fwd(x0, return_latents=True)
             latent1 = latent1 if self.use_latents else None
-
+            # x1 = x1[idx]
+            # latent1 = latent1[idx] if latent is not None else None
             # pick data with probabability 1-alpha
             raw_mask = torch.bernoulli(torch.full((batch_size,), self.alpha)).to(x.device)
             mask = raw_mask.view(batch_size, *([1] * (x.ndim - 1)))
@@ -89,8 +92,13 @@ class DeconvolvingInterpolant(torch.nn.Module):
             t = torch.rand(x.shape[0]).to(x.device)
             new_shape = [-1] + [1] * (x.ndim - 1)
             t = t.reshape(new_shape)
-            It = (1-t)*x0 + t*x1
-            v_true = x1 - x0
+            if self.gamma_scale != 0:
+                z = torch.randn(x0.shape).to(x.device)
+                It = (1-t)*x0 + t*x1 + self.gamma_scale * t*(1-t) * z
+                v_true = x1 - x0 + self.gamma_scale * (1-2*t) * z
+            else:
+                It = (1-t)*x0 + t*x1
+                v_true = x1 - x0
             vt   = v(It, torch.squeeze(t), latent1)
             loss += torch.mean((vt - v_true)**2)
 
@@ -171,21 +179,25 @@ class DeconvolvingInterpolant(torch.nn.Module):
             loss += torch.mean((bt - b_true)**2)
         return loss / self.resamples
 
-    def transport(self, b, x, latent=None, return_trajectory=False):
+    def transport(self, b, x, latent=None, return_trajectory=False, return_velocity=False):
         traj = [x]
+        vel_all = []
         with torch.no_grad():
             Xt_prev = x*1.
             for i in range(1, self.n_steps+1):
                 ti = (torch.ones(x.shape[0]) - (i-1) *self.delta_t).to(x.device)
-                Xt_prev -= b(Xt_prev, ti, latent) * self.delta_t
+                v = b(Xt_prev, ti, latent)
+                vel_all.append(v)
+                Xt_prev -= v * self.delta_t
                 if return_trajectory:
                     traj.append(Xt_prev)
             Xt_final = Xt_prev
 
-        if return_trajectory:
-            return traj
+        base_state = traj if return_trajectory else Xt_final
+        if return_velocity:
+            return base_state, vel_all
         else:
-            return Xt_final
+            return base_state
 
     def transport_follmer(self, b, x, latent=None, return_trajectory=False):
         traj = [x]

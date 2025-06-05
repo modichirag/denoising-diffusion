@@ -23,12 +23,13 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print("DEVICE : ", device)
 
 parser = argparse.ArgumentParser(description="")
-parser.add_argument("--dataset", type=str, default="moon", help="dataset")
-parser.add_argument("--corruption", type=str, default="projection_coeff", help="corruption")
+parser.add_argument("--dataset", type=str, default="manifold_ds", help="dataset")
+parser.add_argument("--corruption", type=str, default="projection_vec_ds", help="corruption")
 parser.add_argument("--corruption_levels", type=float, nargs='+', help="corruption level")
 parser.add_argument("--fc_width", type=int, default=256, help="width of the feedforward network")
 parser.add_argument("--fc_depth", type=int, default=3, help="depth of the feedforward network")
-parser.add_argument("--train_steps", type=int, default=20000, help="number of channels in model")
+parser.add_argument("--gamma_scale", type=float, default=1.0, help="gaussian noise level in the interpolant")
+parser.add_argument("--train_steps", type=int, default=40000, help="number of channels in model")
 parser.add_argument("--batch_size", type=int, default=4000, help="batch size")
 parser.add_argument("--learning_rate", type=float, default=5e-4, help="learning rate")
 parser.add_argument("--update_transport_every", type=int, default=32, help="continued training count")
@@ -43,7 +44,7 @@ parser.add_argument("--resume_count", type=int, default=1, help="continued train
 
 # Parse arguments
 args = parser.parse_args()
-# args = parser.parse_args(['--corruption_levels', '1', '0.01',
+# args = parser.parse_args(['--corruption_levels', '2', '0.01',
 #                           '--suffix', 'test'])
 
 print(args)
@@ -79,13 +80,21 @@ os.makedirs(results_folder, exist_ok=True)
 print(f"Results will be saved in folder: {results_folder}")
 use_latents, latent_dim = fwd_maps.parse_latents(corruption, None)
 
+# Initialize model and train
 alpha = 1.0
 use_follmer = False
 if use_follmer:
     diffusion_coef = corruption_levels[1]
 else:
     diffusion_coef = None
-deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, n_steps=args.ode_steps, alpha=alpha, diffusion_coef=diffusion_coef).to(device)
+deconvolver = DeconvolvingInterpolant(
+    fwd_func,
+    use_latents=use_latents,
+    n_steps=args.ode_steps,
+    alpha=alpha,
+    diffusion_coef=diffusion_coef,
+    gamma_scale=args.gamma_scale
+).to(device)
 if use_follmer:
     deconvolver.transport = deconvolver.transport_follmer
     deconvolver.loss_fn = deconvolver.loss_fn_follmer

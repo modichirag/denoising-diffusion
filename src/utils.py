@@ -90,7 +90,7 @@ def remove_all_prefix(state_dict):
     new_dict = {k.replace("module.", ""): v for k, v in new_dict.items()}
     return new_dict
 
-    
+
 def is_compiled_model(model):
     return hasattr(model, "_orig_mod")
 
@@ -110,7 +110,7 @@ def make_serializable(obj):
 
 def push_to_device(*tensors, device=None):
     """
-    Move arbitrary number of tensors to the given device.   
+    Move arbitrary number of tensors to the given device.
     Args:
         *tensors: Arbitrary number of PyTorch tensors.
         device (str or torch.device): Target device (e.g., 'cuda', 'cpu').
