@@ -110,8 +110,6 @@ if local_rank == 0:
 #                dim=16, dim_max=32, num_blocks_per_stage=1, num_downsamples=2).to(device)
 b = KarrasUnet1D(seq_len=D//downsample_factor, channels=downsample_factor, \
                   dim=16, num_blocks_per_stage=2, num_downsamples=3, attn_res=(32)).to(device)
-# b = torch.compile(b)
-# b = DDP(b, device_ids=[local_rank], find_unused_parameters=False)     
 print(f"Number of parameters : {count_parameters(b)[0]:0.3f} million")
 deconvolver = DeconvolvingInterpolant(fwd_func, use_latents, n_steps=args.ode_steps, 
                                    alpha=args.alpha, resamples=args.resamples).to(device)

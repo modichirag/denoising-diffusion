@@ -270,9 +270,6 @@ class Trainer:
                     self.lr_scheduler.step()
                 torch.cuda.synchronize()
 
-                # if (self.step !=0 ) & (( self.step % 50) == 0):
-                #     print("loading model test")
-                #     self.load("best")
                 # If loss spikes, reset model and optimizer
                 reset_model = False
                 recent_losses.append(total_loss)
@@ -282,10 +279,14 @@ class Trainer:
                     mean_loss = sum(recent_losses[:-1]) / (window-1)
                     if total_loss > loss_threshold * mean_loss or not torch.isfinite(loss):
                         print("Loss spike detected. Resetting model and optimizer.")
-                        self.load("best")
-                        recent_losses.clear()
-                        self.opt.zero_grad()
-                        reset_model = True
+                        try:
+                            self.load("best")
+                            recent_losses.clear()   
+                            self.opt.zero_grad()    
+                            reset_model = True  
+                        except Exception as e:
+                            print("Exception in loading best model after spike", e)
+                            print("Continuing training without resetting model.")
 
                 if not reset_model:
                     self.step += 1

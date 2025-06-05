@@ -62,6 +62,7 @@ print(f"DEVICE (Rank {local_rank}): {device}")
 
 # Parse arguments
 dataset, D, nc = dataset_dict[args.dataset]
+dataset = dataset()
 if args.dataset == 'celebA':
     image_dataset = dataset
 else:

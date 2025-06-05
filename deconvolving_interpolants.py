@@ -46,6 +46,7 @@ else:
 
 # Parse arguments
 dataset, D, nc = dataset_dict[args.dataset]
+dataset = dataset()
 if args.dataset == 'celebA':
     image_dataset = dataset
 else:
