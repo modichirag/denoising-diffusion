@@ -123,7 +123,8 @@ def add_gaussian_noise(wavelength, flux, noise_std=0.1, SNR=None, meta=None):
     """
     # Generate random noise array
     if SNR is not None:
-        noise_std = torch.mean(flux) / SNR  # Estimate noise standard deviation based on SNR
+        noise_std = torch.mean(flux) / SNR  + 1e-4 # Estimate noise standard deviation based on SNR
+    # noise_std = 0.5
     noise = torch.normal(mean=torch.zeros_like(wavelength), std=noise_std).to(flux.device)
     new_flux = flux + noise
     # Record this corruption in metadata
