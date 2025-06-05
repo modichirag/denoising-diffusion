@@ -17,8 +17,10 @@ python -u mlp_interpolants_trainer.py \
     --dataset manifold_ds \
     --corruption projection_vec_ds \
     --corruption_level 2 0.01 \
+    --gamma_scale 1.0 \
     --train_steps 200000 \
     --learning_rate 5e-4 \
     --clean_data_steps -1 \
     --batch_size 4096 \
-    --suffix run3
+    --update_transport_every 32 \
+    --suffix up32_gamma1

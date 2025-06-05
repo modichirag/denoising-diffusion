@@ -16,8 +16,11 @@ def get_samples(b, deconvolver, dataloader, device, validation_data):
         data, obs, latents = next(dataloader)
     else:
         data, obs, latents = validation_data
-    data, obs, latents = push_to_device(data, obs, latents, device=device)
-    latents = latents if deconvolver.use_latents else None
+    if deconvolver.use_latents:
+        data, obs, latents = push_to_device(data, obs, latents, device=device)
+    else:
+        data, obs = push_to_device(data, obs, device=device)
+        latents = None
     clean = deconvolver.transport(b, obs, latents)
     return data, obs, latents, clean
 
@@ -40,7 +43,7 @@ def save_image(idx, b, deconvolver, dataloader, device, results_folder, losses, 
     for axis in axar.flatten():
         axis.set_xticks([])
         axis.set_yticks([])
-    plt.subplots_adjust(wspace=0.0, hspace=0.0) 
+    plt.subplots_adjust(wspace=0.0, hspace=0.0)
     plt.savefig(f'{results_folder}/denoising_{idx}.png', dpi=300)
     plt.close()
 
@@ -64,7 +67,7 @@ def save_mri_pix(idx, b, deconvolver, dataloader, device, results_folder, losses
     for axis in axar.flatten():
         axis.set_xticks([])
         axis.set_yticks([])
-    plt.subplots_adjust(wspace=0.0, hspace=0.0) 
+    plt.subplots_adjust(wspace=0.0, hspace=0.0)
     plt.savefig(f'{results_folder}/denoising_{idx}.png', dpi=300)
     plt.close()
 

@@ -66,7 +66,7 @@ class Trainer:
             milestone = None,
             clean_data_steps = -1, # not using clean data
             callback_fn = None,
-            validation_data = None, 
+            validation_data = None,
             callback_kwargs = {},
     ):
         super().__init__()
@@ -227,8 +227,15 @@ class Trainer:
         else:
             transport_map = None
 
-        with tqdm(initial = self.step, total = self.train_num_steps, disable = not self.master_process) as pbar:
-
+        if not bool(os.getenv('SLURM_JOB_ID')): # interactive environment like Jupyter
+            miniters = 1
+            mininterval = 0.1
+            pbar_refresh = True
+        else: # non-interactive environment
+            miniters = 100
+            mininterval = 60.0
+            pbar_refresh = False
+        with tqdm(initial=self.step, total=self.train_num_steps, disable=not self.master_process, miniters=miniters, mininterval=mininterval) as pbar:
             while self.step < self.train_num_steps:
                 self.model.train()
 
@@ -252,7 +259,7 @@ class Trainer:
                         if p.grad is not None and not p.grad.is_contiguous():
                             p.grad = p.grad.contiguous()
 
-                pbar.set_description(f'loss: {total_loss:.4f}')
+                pbar.set_description(f'loss: {total_loss:.4f}', refresh=pbar_refresh)
                 losses.append(total_loss)
 
                 torch.cuda.synchronize()
