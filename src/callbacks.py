@@ -11,7 +11,7 @@ from utils import grab, push_to_device
 # callback_fn(milestone, b, deconvolver,
 #               dataloader, validation_data, losses, device, results_folder)
 
-def get_samples(b, deconvolver, dataloader, device, validation_data):
+def get_samples(b, s, deconvolver, dataloader, device, validation_data):
     if validation_data is None:
         data, obs, latents = next(dataloader)
     else:
@@ -21,7 +21,7 @@ def get_samples(b, deconvolver, dataloader, device, validation_data):
     else:
         data, obs = push_to_device(data, obs, device=device)
         latents = None
-    clean = deconvolver.transport(b, obs, latents)
+    clean = deconvolver.transport(b, obs, latents, s)
     return data, obs, latents, clean
 
 
@@ -71,8 +71,8 @@ def save_mri_pix(idx, b, deconvolver, dataloader, device, results_folder, losses
     plt.savefig(f'{results_folder}/denoising_{idx}.png', dpi=300)
     plt.close()
 
-def save_fig_2dsynt_vec(idx, b, deconvolver, dataloader, device, results_folder, losses, validation_data,  **kargs):
-    clean, corrupted, latents, generated = get_samples(b, deconvolver, dataloader, device, validation_data)
+def save_fig_2dsynt_vec(idx, b, s, deconvolver, dataloader, device, results_folder, losses, validation_data,  **kargs):
+    clean, corrupted, latents, generated = get_samples(b, s, deconvolver, dataloader, device, validation_data)
     push_fwd_func = deconvolver.push_fwd
     c = '#62508f' # plot color
     fig, axes = plt.subplots(1,4, figsize=(20, 5))
@@ -108,8 +108,8 @@ def save_fig_2dsynt_vec(idx, b, deconvolver, dataloader, device, results_folder,
     plt.close()
 
 
-def save_fig_2dsynt_coeff(idx, b, deconvolver, dataloader, device, results_folder, losses, validation_data,  **kargs):
-    clean, corrupted, latents, generated = get_samples(b, deconvolver, dataloader, device, validation_data)
+def save_fig_2dsynt_coeff(idx, b, s, deconvolver, dataloader, device, results_folder, losses, validation_data,  **kargs):
+    clean, corrupted, latents, generated = get_samples(b, s, deconvolver, dataloader, device, validation_data)
     push_fwd_func = deconvolver.push_fwd
 
     c = '#62508f' # plot color
@@ -157,8 +157,8 @@ def save_fig_2dsynt_coeff(idx, b, deconvolver, dataloader, device, results_folde
     plt.close()
 
 
-def save_fig_manifold(idx, b, deconvolver, dataloader, device, results_folder, losses, validation_data,  **kargs):
-    clean, corrupted, latents, generated = get_samples(b, deconvolver, dataloader, device, validation_data)
+def save_fig_manifold(idx, b, s, deconvolver, dataloader, device, results_folder, losses, validation_data,  **kargs):
+    clean, corrupted, latents, generated = get_samples(b, s, deconvolver, dataloader, device, validation_data)
     clean = grab(clean)
     corrupted = grab(corrupted)
     generated = grab(generated)

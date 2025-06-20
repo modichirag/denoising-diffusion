@@ -68,6 +68,7 @@ class Trainer:
             callback_fn = None,
             validation_data = None,
             callback_kwargs = {},
+            s_model = None
     ):
         super().__init__()
 
@@ -82,6 +83,7 @@ class Trainer:
         model = torch.compile(self.raw_model) if self.compile_model else self.raw_model
         model = DDP(model, device_ids=[self.local_rank], find_unused_parameters=False) if self.ddp else model
         self.model = model
+        self.s_model = s_model
         # if self.compile_model or self.ddp:
         #     print("Compiling model for faster training")
         #     model = torch.compile(self.raw_model) if self.compile_model else self.raw_model
@@ -124,8 +126,12 @@ class Trainer:
         else:
             if weight_decay == 0:
                 self.opt = Adam(model.parameters(), lr = train_lr, betas = adam_betas)
+                if s_model is not None:
+                    self.s_opt = Adam(s_model.parameters(), lr = train_lr, betas = adam_betas)
             else:
                 self.opt = AdamW(model.parameters(), lr = train_lr, betas = adam_betas, weight_decay=weight_decay)
+                if s_model is not None:
+                    self.s_opt = AdamW(s_model.parameters(), lr = train_lr, betas = adam_betas, weight_decay=weight_decay)
         if lr_scheduler is not None:
             num_warmup_steps = int(warmup_fraction * train_num_steps)
             self.lr_scheduler = get_cosine_schedule_with_warmup(
@@ -219,13 +225,16 @@ class Trainer:
         min_loss = 1e10
         recent_losses = []
         import copy
+        transport_map = None
+        transport_score = None
         if self.update_transport_every > 1:
             print(f"Setting up transport map to be updated every {self.update_transport_every} steps")
             transport_map = copy.deepcopy(self.model.module) if isinstance(self.model, DDP) \
                         else copy.deepcopy(self.model)
             transport_map.eval()
-        else:
-            transport_map = None
+            if self.s_model is not None:
+                transport_score = copy.deepcopy(self.s_model)
+                transport_score.eval()
 
         if not bool(os.getenv('SLURM_JOB_ID')): # interactive environment like Jupyter
             miniters = 1
@@ -238,6 +247,8 @@ class Trainer:
         with tqdm(initial=self.step, total=self.train_num_steps, disable=not self.master_process, miniters=miniters, mininterval=mininterval) as pbar:
             while self.step < self.train_num_steps:
                 self.model.train()
+                if self.s_model is not None:
+                    self.s_model.train()
 
                 total_loss = 0.
                 for _ in range(self.gradient_accumulate_every):
@@ -246,13 +257,24 @@ class Trainer:
                     latents = latents.to(self.device) if self.deconvolver.use_latents else None
                     with torch.autocast(device_type=device, dtype=typedict[self.mixed_precision_type]):
                         if self.step < self.clean_data_steps:
-                            loss = self.deconvolver.loss_fn(self.model, obs, latents, x0=data).mean()
+                            if self.s_model is None:
+                                loss = self.deconvolver.loss_fn(self.model, obs, latents, x0=data).mean()
+                            else:
+                                loss, s_loss = self.deconvolver.loss_fn(self.model, obs, latents, x0=data, s=self.s_model)
+                                loss, s_loss = loss.mean(), s_loss.mean()
                         else:
-                            loss = self.deconvolver.loss_fn(self.model, obs, latents, b=transport_map).mean()
+                            if self.s_model is None:
+                                loss = self.deconvolver.loss_fn(self.model, obs, latents, b_fixed=transport_map).mean()
+                            else:
+                                loss, s_loss = self.deconvolver.loss_fn(self.model, obs, latents, b_fixed=transport_map, s=self.s_model, s_fixed=transport_score)
+                                loss, s_loss = loss.mean(), s_loss.mean()
                         loss = loss / self.gradient_accumulate_every
                     curr_loss = loss.detach()
                     if self.ddp : dist.all_reduce(curr_loss, op=dist.ReduceOp.AVG)
                     total_loss += curr_loss.item()
+                    if self.s_model is not None:
+                        s_loss = s_loss / self.gradient_accumulate_every
+                        s_loss.backward(retain_graph=True)
                     loss.backward()
 
                     for p in self.model.parameters():
@@ -266,6 +288,10 @@ class Trainer:
                 _ = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
                 self.opt.step()
                 self.opt.zero_grad()
+                if self.s_model is not None:
+                    _ = torch.nn.utils.clip_grad_norm_(self.s_model.parameters(), self.max_grad_norm)
+                    self.s_opt.step()
+                    self.s_opt.zero_grad()
                 if self.lr_scheduler is not None:
                     self.lr_scheduler.step()
                 torch.cuda.synchronize()
@@ -281,9 +307,9 @@ class Trainer:
                         print("Loss spike detected. Resetting model and optimizer.")
                         try:
                             self.load("best")
-                            recent_losses.clear()   
-                            self.opt.zero_grad()    
-                            reset_model = True  
+                            recent_losses.clear()
+                            self.opt.zero_grad()
+                            reset_model = True
                         except Exception as e:
                             print("Exception in loading best model after spike", e)
                             print("Continuing training without resetting model.")
@@ -298,6 +324,9 @@ class Trainer:
                         else:
                             transport_map.load_state_dict(self.model.state_dict())
                         transport_map.eval()
+                        if transport_score is not None:
+                            transport_score.load_state_dict(self.s_model.state_dict())
+                            transport_score.eval()
 
                     if self.master_process:
                         self.ema.update()
@@ -318,11 +347,13 @@ class Trainer:
                             # model_to_use = self.ema.ema_model.module if isinstance(self.ema.ema_model, DDP) \
                             #                     else self.ema.ema_model
                             try:
+                                if self.s_model is not None:
+                                    self.s_model.eval()
                                 with torch.no_grad(), torch.autocast(device_type=device, dtype=typedict[self.mixed_precision_type]):
                                     if self.callback_fn is not None:
                                         milestone=self.step // self.save_and_sample_every
                                         self.callback_fn(idx = milestone,
-                                                        b = model_to_use, deconvolver = self.deconvolver,
+                                                        b = model_to_use, s = self.s_model, deconvolver = self.deconvolver,
                                                         dataloader = self.dl, validation_data = self.validation_data,
                                                         losses = losses, device = self.device,
                                                         results_folder = self.results_folder, **self.callback_kwargs)

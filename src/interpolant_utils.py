@@ -1,4 +1,5 @@
 import torch
+import math
 from networks import MLPResNet, PositionalEmbedding
 
 class VelocityField(torch.nn.Module):
@@ -50,7 +51,7 @@ class MLPVelocityField(torch.nn.Module):
 
 class DeconvolvingInterpolant(torch.nn.Module):
 
-    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1, diffusion_coef=None, gamma_scale=0.0):
+    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1, diffusion_coef=0.0, gamma_scale=0.0):
         super().__init__()
         self.push_fwd = push_fwd
         self.n_steps = n_steps
@@ -64,16 +65,16 @@ class DeconvolvingInterpolant(torch.nn.Module):
         if use_latents:
             print("Using latents for deonvolving")
 
-    def loss_fn(self, v, x, latent=None, x0=None, b=None):
+    def loss_fn(self, b, x, latent=None, x0=None, b_fixed=None, s=None, s_fixed=None):
         batch_size = x.shape[0]
         loss = 0.
+        s_loss = 0.
         # idx = [torch.randperm(batch_size)]
 
         if x0 is None: # x0 is the cleandata, use if provided
-            if b is not None:
-                x0 = self.transport(b, x, latent=latent)
-            else:
-                x0 = self.transport(v, x, latent=latent)
+            b_transport = b_fixed if b_fixed is not None else b
+            s_transport = s_fixed if s_fixed is not None else s
+            x0 = self.transport(b_transport, x, latent=latent, s=s_transport)
 
         for i in range(self.resamples):
             x1, latent1 = self.push_fwd(x0, return_latents=True)
@@ -96,13 +97,19 @@ class DeconvolvingInterpolant(torch.nn.Module):
                 z = torch.randn(x0.shape).to(x.device)
                 It = (1-t)*x0 + t*x1 + self.gamma_scale * t*(1-t) * z
                 v_true = x1 - x0 + self.gamma_scale * (1-2*t) * z
+                if s is not None:
+                    st = s(It, torch.squeeze(t), latent1)
+                    s_loss += torch.mean((st - z)**2)
             else:
                 It = (1-t)*x0 + t*x1
                 v_true = x1 - x0
-            vt   = v(It, torch.squeeze(t), latent1)
+            vt   = b(It, torch.squeeze(t), latent1)
             loss += torch.mean((vt - v_true)**2)
 
-        return loss / self.resamples
+        if s is not None:
+            return loss / self.resamples, s_loss / self.resamples
+        else:
+            return loss / self.resamples
 
 
     # def loss_fn_cleandata(self, b, x, x0, latent=None):
@@ -179,16 +186,20 @@ class DeconvolvingInterpolant(torch.nn.Module):
             loss += torch.mean((bt - b_true)**2)
         return loss / self.resamples
 
-    def transport(self, b, x, latent=None, return_trajectory=False, return_velocity=False):
+    def transport(self, b, x, latent=None, s=None, return_trajectory=False, return_velocity=False):
         traj = [x]
         vel_all = []
         with torch.no_grad():
             Xt_prev = x*1.
             for i in range(1, self.n_steps+1):
+                ti_scalar = 1 - (i-1) * self.delta_t
                 ti = (torch.ones(x.shape[0]) - (i-1) *self.delta_t).to(x.device)
                 v = b(Xt_prev, ti, latent)
                 vel_all.append(v)
                 Xt_prev -= v * self.delta_t
+                if s is not None:
+                    Xt_prev += s(Xt_prev, ti, latent) / (self.gamma_scale * (ti_scalar) * (1-ti_scalar) + 1e-3) * self.diffusion_coef * self.delta_t + \
+                        math.sqrt(2. * self.diffusion_coef) * self.sqrt_delta_t*torch.randn(x.shape).to(x.device)
                 if return_trajectory:
                     traj.append(Xt_prev)
             Xt_final = Xt_prev
