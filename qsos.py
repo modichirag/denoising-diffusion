@@ -35,6 +35,7 @@ parser.add_argument("--alpha", type=float, default=0.9, help="probability of usi
 parser.add_argument("--resamples", type=int, default=1, help="number of resamplings")
 parser.add_argument("--multiview", action='store_true', help="change corruption every epoch if provided, else not")
 parser.add_argument("--transport_steps", type=int, default=1, help="update transport map every n steps")
+parser.add_argument("--gamma_scale", type=float, default=0., help="noise added to interpolant")
 
 args = parser.parse_args()
 print(args)
@@ -112,7 +113,7 @@ b = KarrasUnet1D(seq_len=D//downsample_factor, channels=downsample_factor, \
                   dim=16, num_blocks_per_stage=2, num_downsamples=3, attn_res=(32)).to(device)
 print(f"Number of parameters : {count_parameters(b)[0]:0.3f} million")
 deconvolver = DeconvolvingInterpolant(fwd_func, use_latents, n_steps=args.ode_steps, 
-                                   alpha=args.alpha, resamples=args.resamples).to(device)
+                                   alpha=args.alpha, resamples=args.resamples, gamma_scale=args.gamma_scale).to(device)
 corrupt_dataset = CorruptedDataset(dataset, fwd_func, \
                                    tied_rng=not(args.multiview), base_seed=args.dataset_seed)
 dataset_sampler = DistributedSampler(corrupt_dataset, num_replicas=world_size, \

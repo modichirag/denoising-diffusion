@@ -44,6 +44,7 @@ parser.add_argument("--multiview", action='store_true', help="change corruption 
 parser.add_argument("--noise_masked", action='store_true', help="add noise to masked region, else not")
 parser.add_argument("--max_pos_embedding", type=int, default=2, help="number of resamplings")
 parser.add_argument("--transport_steps", type=int, default=1, help="update transport map every n steps")
+parser.add_argument("--gamma_scale", type=float, default=0., help="noise added to interpolant")
 
 
 args = parser.parse_args()
@@ -120,7 +121,8 @@ b =  ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim,
 b = DDP(b, device_ids=[local_rank], find_unused_parameters=False)     
 print("Parameter count : ", count_parameters(b))
 deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, \
-                                      alpha=args.alpha, resamples=args.resamples, n_steps=args.ode_steps).to(device)
+                                    alpha=args.alpha, resamples=args.resamples, \
+                                    n_steps=args.ode_steps, gamma_scale=args.gamma_scale).to(device)
 corrupt_dataset = CorruptedDataset(dataset, deconvolver.push_fwd, \
                                    tied_rng=not(args.multiview), base_seed=args.dataset_seed)
 dataset_sampler = DistributedSampler(corrupt_dataset, num_replicas=world_size, \
