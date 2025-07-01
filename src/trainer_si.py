@@ -314,9 +314,9 @@ class Trainer:
                                 print(f"New best model at step {self.step} with loss {min_loss:.4f}")
 
                             self.ema.ema_model.eval()
-                            model_to_use = self.ema.ema_model
-                            # model_to_use = self.ema.ema_model.module if isinstance(self.ema.ema_model, DDP) \
-                            #                     else self.ema.ema_model
+                            # model_to_use = self.ema.ema_model
+                            model_to_use = self.ema.ema_model.module if isinstance(self.ema.ema_model, DDP) \
+                                                else self.ema.ema_model
                             try:
                                 with torch.no_grad(), torch.autocast(device_type=device, dtype=typedict[self.mixed_precision_type]):
                                     if self.callback_fn is not None:

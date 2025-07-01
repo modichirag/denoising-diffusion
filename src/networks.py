@@ -544,6 +544,7 @@ class ConditionalDhariwalUNet(torch.nn.Module): #Difference in handling label_di
         gated               = False,         # Use gated convolutions? 
         latent_channels     = 8,
         max_pos_embedding = 10_000,
+                 zero_emb_channels_bwd = True,
     ):
         super().__init__()
         self.label_dropout = label_dropout
@@ -582,9 +583,10 @@ class ConditionalDhariwalUNet(torch.nn.Module): #Difference in handling label_di
             print("Use U-net to process and then concatenate")            
             latent_in_channels = C
             latent_channels = max(latent_in_channels, latent_channels)
+            emb_channels_backward_compatibility = 0 if zero_emb_channels_bwd else latent_channels
             self.map_latents = torch.nn.Sequential(
                 Conv2d(in_channels=C, out_channels=latent_channels, kernel=3, gated=gated, **init),
-                UNetBlock(in_channels=latent_channels, out_channels=latent_channels, emb_channels=0, 
+                UNetBlock(in_channels=latent_channels, out_channels=latent_channels, emb_channels=emb_channels_backward_compatibility, 
                             attention=False, dropout=0, init=init, init_zero=init_zero, gated=gated),
                 Conv2d(in_channels=latent_channels, out_channels=C, kernel=3, gated=gated, **init)
             )
