@@ -198,8 +198,8 @@ class DeconvolvingInterpolant(torch.nn.Module):
                 vel_all.append(v)
                 Xt_prev -= v * self.delta_t
                 if s is not None:
-                    Xt_prev += s(Xt_prev, ti, latent) / (self.gamma_scale * (ti_scalar) * (1-ti_scalar) + 1e-3) * self.diffusion_coef * self.delta_t + \
-                        math.sqrt(2. * self.diffusion_coef) * self.sqrt_delta_t*torch.randn(x.shape).to(x.device)
+                    Xt_prev -= s(Xt_prev, ti, latent) / (self.gamma_scale * (ti_scalar) * (1-ti_scalar) + 1e-3) * self.diffusion_coef * self.delta_t # score term
+                    Xt_prev += math.sqrt(2. * self.diffusion_coef) * self.sqrt_delta_t*torch.randn(x.shape).to(x.device) # diffusion term
                 if return_trajectory:
                     traj.append(Xt_prev)
             Xt_final = Xt_prev
