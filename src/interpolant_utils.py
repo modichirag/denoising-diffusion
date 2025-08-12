@@ -109,7 +109,7 @@ class DeconvolvingInterpolant(torch.nn.Module):
         if s is not None:
             return loss / self.resamples, s_loss / self.resamples
         else:
-            return loss / self.resamples
+            return loss / self.resamples, None  # s_loss is None
 
     def transport(self, b, x, latent=None, s=None, return_trajectory=False, return_velocity=False):
         traj = [x]
