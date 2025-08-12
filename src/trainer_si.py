@@ -146,6 +146,8 @@ class Trainer:
                     num_warmup_steps=num_warmup_steps,
                     num_training_steps=train_num_steps
                 )   
+            else:
+                self.s_lr_scheduler = None
         else:
             self.lr_scheduler, self.s_lr_scheduler = None, None
 
