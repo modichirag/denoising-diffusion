@@ -11,7 +11,7 @@ from utils import grab, push_to_device
 # callback_fn(milestone, b, deconvolver,
 #               dataloader, validation_data, losses, device, results_folder)
 
-def get_samples(b, s, deconvolver, dataloader, device, validation_data):
+def get_samples(b, deconvolver, dataloader, device, validation_data, s=None):
     if validation_data is None:
         data, obs, latents = next(dataloader)
     else:
@@ -21,14 +21,14 @@ def get_samples(b, s, deconvolver, dataloader, device, validation_data):
     else:
         data, obs = push_to_device(data, obs, device=device)
         latents = None
-    clean = deconvolver.transport(b, obs, latents, s)
+    clean = deconvolver.transport(b, obs, latents, s=s)
     return data, obs, latents, clean
 
 
 
-def save_image(idx, b, deconvolver, dataloader, device, results_folder, losses, validation_data,  **kargs):
+def save_image(idx, b, deconvolver, dataloader, device, results_folder, losses, validation_data, s=None, **kargs):
 
-    data, obs, latents, clean = get_samples(b, deconvolver, dataloader, device, validation_data)
+    data, obs, latents, clean = get_samples(b, deconvolver, dataloader, device, validation_data, s=s)
     to_show = [data, obs, clean]
 
     fig, axar = plt.subplots(len(to_show), 8, figsize=(8, 3), sharex=True, sharey=True)
@@ -48,9 +48,9 @@ def save_image(idx, b, deconvolver, dataloader, device, results_folder, losses, 
     plt.close()
 
 
-def save_mri_pix(idx, b, deconvolver, dataloader, device, results_folder, losses, validation_data,  **kargs):
+def save_mri_pix(idx, b, deconvolver, dataloader, device, results_folder, losses, validation_data, s=None, **kargs):
 
-    data, obs, latents, clean = get_samples(b, deconvolver, dataloader, device, validation_data)
+    data, obs, latents, clean = get_samples(b, deconvolver, dataloader, device, validation_data, s=s)
     downsample_factor = int(obs.shape[1]**0.5)
     shuffler = torch.nn.PixelShuffle(downsample_factor)
     to_show = [shuffler(data).permute(0, 2, 3, 1), shuffler(obs).permute(0, 2, 3, 1), shuffler(clean).permute(0, 2, 3, 1)]
@@ -71,8 +71,9 @@ def save_mri_pix(idx, b, deconvolver, dataloader, device, results_folder, losses
     plt.savefig(f'{results_folder}/denoising_{idx}.png', dpi=300)
     plt.close()
 
-def save_fig_2dsynt_vec(idx, b, s, deconvolver, dataloader, device, results_folder, losses, validation_data,  **kargs):
-    clean, corrupted, latents, generated = get_samples(b, s, deconvolver, dataloader, device, validation_data)
+
+def save_fig_2dsynt_vec(idx, b, deconvolver, dataloader, device, results_folder, losses, validation_data, s=None, **kargs):
+    clean, corrupted, latents, generated = get_samples(b, deconvolver, dataloader, device, validation_data, s=s)
     push_fwd_func = deconvolver.push_fwd
     c = '#62508f' # plot color
     fig, axes = plt.subplots(1,4, figsize=(20, 5))
@@ -108,8 +109,8 @@ def save_fig_2dsynt_vec(idx, b, s, deconvolver, dataloader, device, results_fold
     plt.close()
 
 
-def save_fig_2dsynt_coeff(idx, b, s, deconvolver, dataloader, device, results_folder, losses, validation_data,  **kargs):
-    clean, corrupted, latents, generated = get_samples(b, s, deconvolver, dataloader, device, validation_data)
+def save_fig_2dsynt_coeff(idx, b, deconvolver, dataloader, device, results_folder, losses, validation_data, s=None, **kargs):
+    clean, corrupted, latents, generated = get_samples(b, deconvolver, dataloader, device, validation_data, s=s)
     push_fwd_func = deconvolver.push_fwd
 
     c = '#62508f' # plot color
@@ -157,8 +158,8 @@ def save_fig_2dsynt_coeff(idx, b, s, deconvolver, dataloader, device, results_fo
     plt.close()
 
 
-def save_fig_manifold(idx, b, s, deconvolver, dataloader, device, results_folder, losses, validation_data,  **kargs):
-    clean, corrupted, latents, generated = get_samples(b, s, deconvolver, dataloader, device, validation_data)
+def save_fig_manifold(idx, b, deconvolver, dataloader, device, results_folder, losses, validation_data, s=None, **kargs):
+    clean, corrupted, latents, generated = get_samples(b, deconvolver, dataloader, device, validation_data, s=s)
     clean = grab(clean)
     corrupted = grab(corrupted)
     generated = grab(generated)
