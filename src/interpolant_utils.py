@@ -62,6 +62,8 @@ class DeconvolvingInterpolant(torch.nn.Module):
         self.resamples = resamples
         self.diffusion_coef = diffusion_coef
         self.gamma_scale = gamma_scale
+        if self.diffusion_coef > 0.25 * self.gamma_scale:
+            print("WARNING: diffusion_coef is larger than 0.25 * gamma_scale, maximum noise during training.")
         if use_latents:
             print("Using latents for deonvolving")
 
@@ -107,7 +109,7 @@ class DeconvolvingInterpolant(torch.nn.Module):
             loss += torch.mean((vt - v_true)**2)
 
         if s is not None:
-            return loss / self.resamples, s_loss / self.resamples
+            return loss / self.resamples, s_loss / self.resamples 
         else:
             return loss / self.resamples, None  # s_loss is None
 
