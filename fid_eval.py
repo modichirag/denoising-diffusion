@@ -29,6 +29,7 @@ args = parser.parse_args()
 print(args)
 folder = f"{BASEPATH}/{args.folder}/"
 dataset, D, nc = dataset_dict[args.dataset]
+dataset = dataset()
 image_dataset = ImagesOnly(dataset)
 model_channels = args.channels #192
 print(D, nc)

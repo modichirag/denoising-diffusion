@@ -185,7 +185,8 @@ class Trainer:
             data['s_opt'] = self.s_opt.state_dict()
             data['s_model'] = self.raw_s_model.state_dict() 
             data['s_ema'] = self.s_ema.state_dict() 
-            data['s_scheduler'] = self.s_lr_scheduler.state_dict()
+            if self.s_lr_scheduler is not None:
+                data['s_scheduler'] = self.s_lr_scheduler.state_dict()
 
         torch.save(data, str(self.results_folder / f'model-{milestone}.pt'))
 

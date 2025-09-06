@@ -74,7 +74,7 @@ if use_latents:
 
 deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, n_steps=args.ode_steps).to(device)
 b = ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim, model_channels=args.channels, gated=gated, \
-                            max_pos_embedding=args.max_pos_embedding).to(device)
+                            max_pos_embedding=args.max_pos_embedding, zero_emb_channels_bwd=False).to(device)
 ema_b = EMA(b)
 data = torch.load(f'{folder}/model-{args.model}.pt', weights_only=True)
 try:
