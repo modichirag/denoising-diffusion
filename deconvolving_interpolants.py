@@ -35,6 +35,9 @@ parser.add_argument("--alpha", type=float, default=1., help="probability of usin
 parser.add_argument("--resamples", type=int, default=1, help="number of resamplings")
 parser.add_argument("--multiview", action='store_true', help="change corruption every epoch if provided, else not")
 parser.add_argument("--max_pos_embedding", type=int, default=2, help="number of resamplings")
+parser.add_argument("--gamma_scale", type=float, default=0., help="noise added to interpolant")
+parser.add_argument("--transport_steps", type=int, default=1, help="update transport map every n steps")
+parser.add_argument("--smodel", action='store_true', help="use sde model")
 
 args = parser.parse_args()
 print(args)
@@ -88,24 +91,37 @@ with open(f"{results_folder}/args.json", "w") as f:
 b =  ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim,
                             model_channels=model_channels, gated=gated, \
                             max_pos_embedding=args.max_pos_embedding).to(device)
+if args.smodel:
+    print("SDE training")
+    s_model =  ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim,
+                            model_channels=model_channels, gated=gated, \
+                            max_pos_embedding=args.max_pos_embedding).to(device)
+    if args.gamma_scale == 0. :
+        args.gamma_scale = 1.
+else:
+    s_model = None
+    
 #b = torch.compile(b)
 print("Parameter count : ", count_parameters(b))
 deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, \
-                                      alpha=args.alpha, resamples=args.resamples, n_steps=args.ode_steps).to(device)
+                                      alpha=args.alpha, resamples=args.resamples, n_steps=args.ode_steps, \
+                                      gamma_scale=args.gamma_scale).to(device)
 corrupt_dataset = CorruptedDataset(image_dataset, deconvolver.push_fwd, \
                                    tied_rng=not(args.multiview), base_seed=args.dataset_seed)
 
 trainer = Trainer(model=b, 
-        deconvolver=deconvolver, 
-        dataset = corrupt_dataset,
-        train_batch_size = batch_size,
-        gradient_accumulate_every = int(batch_size // args.mini_batch_size),
-        train_lr = lr,
-        lr_scheduler = lr_scheduler,
-        train_num_steps = train_num_steps,
-        save_and_sample_every= save_and_sample_every,
-        results_folder=results_folder, 
-        warmup_fraction=0.05
+                  deconvolver=deconvolver, 
+                  dataset = corrupt_dataset,
+                  train_batch_size = batch_size,
+                  gradient_accumulate_every = int(batch_size // args.mini_batch_size),
+                  train_lr = lr,
+                  lr_scheduler = lr_scheduler,
+                  train_num_steps = train_num_steps,
+                  save_and_sample_every= save_and_sample_every,
+                  results_folder=results_folder, 
+                  warmup_fraction=0.05,
+                  update_transport_every=args.transport_steps,
+                  s_model=s_model
         )
 
 trainer.train()
