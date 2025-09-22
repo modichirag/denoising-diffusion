@@ -128,8 +128,9 @@ print(f"Stacking Inception features for {fid_scorer.n_samples} generated samples
 
 for batch in tqdm(batches):
     fake_samples = get_cleaned_samples()    
-    fake_features = fid_scorer.calculate_inception_features(fake_samples)
-    stacked_fake_features.append(fake_features)
+    with torch.no_grad():
+        fake_features = fid_scorer.calculate_inception_features(fake_samples)
+        stacked_fake_features.append(fake_features)
 stacked_fake_features = torch.cat(stacked_fake_features, dim=0).cpu().numpy()
 m1 = np.mean(stacked_fake_features, axis=0)
 s1 = np.cov(stacked_fake_features, rowvar=False)
@@ -139,3 +140,5 @@ print(f"FID score of loaded best model : {score}")
 to_save = {'FID_best': score}
 with open(save_name, 'w') as file:
         json.dump(to_save, file, indent=4)
+
+        

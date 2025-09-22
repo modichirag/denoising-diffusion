@@ -28,9 +28,7 @@ def edm_sampler_dps(net, latents, fwd_func, data, data_latents=None, class_label
 
     for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])): # 0, ..., N-1
         # print(i)
-        # x_cur = x_next
-        # x_cur.requires_grad_(True)
-        x_cur = x_next.detach().requires_grad_()
+        x_cur = x_next.detach().requires_grad_(True)
 
         # Increase noise temporarily.
         gamma = min(S_churn / num_steps, np.sqrt(2) - 1) if S_min <= t_cur <= S_max else 0
@@ -45,12 +43,12 @@ def edm_sampler_dps(net, latents, fwd_func, data, data_latents=None, class_label
         # DPS update here
         # norm_grad, norm = grad_and_value(x_prev=x_cur, x0=denoised.to(torch.float32), \
         #                                 fwd_func=fwd_func, data=data, latents=data_latents)
-        difference = data - fwd_func(denoised.to(torch.float32), latents=latents)
+        difference = data - fwd_func(denoised.to(torch.float32), latents=data_latents)
         norm = torch.linalg.norm(difference)
-        norm_grad = torch.autograd.grad(outputs=norm, inputs=x_cur, create_graph=False)[0]
+        norm_grad = torch.autograd.grad(outputs=norm, inputs=x_cur)[0]
         x_next -= norm_grad * conditioning_scale
-        torch.cuda.empty_cache()  # Use only for debugging; can slow down training
-        del x_cur, denoised, d_cur, norm_grad, norm, difference
+        # torch.cuda.empty_cache()  # Use only for debugging; can slow down training
+        del x_cur, denoised, d_cur , norm_grad, norm, difference
 
     return x_next.to(torch.float32)
 
