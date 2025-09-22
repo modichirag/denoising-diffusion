@@ -84,7 +84,7 @@ cifar10_inverse_transforms = transforms.Compose([
     transforms.Normalize(                              # mean/std for CIFAR-10
             mean=(-0.4914, -0.4822, -0.4465),
             std=(1., 1., 1.)
-    )
+    ),
 ])
 
 celebA_inverse_transforms = transforms.Compose([

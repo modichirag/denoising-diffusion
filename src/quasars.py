@@ -288,12 +288,14 @@ def qso_model(wavelength, mean_spectra=None, std_spectra=None, downsample_factor
     print("radius of the kernel corresponding to this resolution: ", radius.item())
 
 
-    def qso_corruption_single(flux, delta_z, n_features, amp, idloglamb, snr, radius):
+    def qso_corruption_single(flux, delta_z, n_features, amp, idloglamb, snr, z_noise, radius):
         # _, flux, meta = apply_redshift(wavelength, flux, delta_z=delta_z)
         # _, flux, meta = add_absorption_features(wavelength, flux, n_features=n_features.item(), meta=meta)
         _, flux, meta = add_flux_calibration_error(wavelength.to(flux.device), flux, amplitude=amp)        
         _, flux, meta = degrade_resolution(wavelength.to(flux.device), flux, dloglambda=1/idloglamb, radius=radius)
-        _, flux, meta = add_gaussian_noise(wavelength.to(flux.device), flux, SNR=snr)
+        # _, flux, meta = add_gaussian_noise(wavelength.to(flux.device), flux, SNR=snr)        
+        noise_stddev = torch.mean(flux) / snr  + 1e-4 # Estimate noise standard deviation based on SNR
+        flux = flux + z_noise * noise_stddev
         return flux
 
 
@@ -321,10 +323,11 @@ def qso_model(wavelength, mean_spectra=None, std_spectra=None, downsample_factor
         idloglamb = (1 + scatter_idloglamb) * inv_delta_loglambda
         snr = torch.rand(batch_size, device=device, generator=generator)*(max_snr - min_snr) + min_snr
         radius = int(get_radius(idloglamb).max().item())
+        z_noise = torch.randn(flux.shape, device=device, generator=generator)
 
         #vmap
-        new_flux = torch.vmap(qso_corruption_single, (0, 0, 0, 0, 0, 0, None),\
-             randomness='different')(flux, delta_z, n_features, amp, idloglamb, snr, radius)
+        new_flux = torch.vmap(qso_corruption_single, (0, 0, 0, 0, 0, 0, 0, None),\
+             randomness='different')(flux, delta_z, n_features, amp, idloglamb, snr, z_noise, radius)
 
         if mean_spectra is not None:
             new_flux = (new_flux - mean_spectra)/std_spectra
@@ -344,12 +347,12 @@ def qso_model(wavelength, mean_spectra=None, std_spectra=None, downsample_factor
 
 
 class qso_dataloader(torch.nn.Module):
-    def __init__(self, wavelength, ds, batch_size=32, downsample=1, mean_spectra=None, std_spectra=None):
+    def __init__(self, wavelength, ds, batch_size=32, downsample=1, mean_spectra=None, std_spectra=None, generator=None):
         super().__init__()
         self.wavelength = wavelength
         self.ds = ds
         self.bs = batch_size
-        dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=1, pin_memory=True, drop_last=True)
+        dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=1, pin_memory=True, drop_last=True, generator=generator)
         self.dl = infinite_dataloader(dl)
         self.downsample = downsample
         self.mean_spectra = mean_spectra
@@ -382,7 +385,7 @@ class qso_dataloader(torch.nn.Module):
         return self.transform(x)
         
 
-def qso_callback(idx, b, deconvolver, dataloader, device, results_folder, losses=None, qdataloader=None, validation_data=None):
+def qso_callback(idx, b, deconvolver, dataloader, device, results_folder, losses=None, qdataloader=None, validation_data=None, s=None):
 
     err, err2 = 0, 0
     ns, bs = 10, 256
