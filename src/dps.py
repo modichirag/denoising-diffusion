@@ -9,11 +9,12 @@ def grad_and_value(x_prev, x0, fwd_func, data, latents=None):
 
 
 def edm_sampler_dps(net, latents, fwd_func, data, data_latents=None, class_labels=None,
-    num_steps=18, sigma_min=0.002, sigma_max=80, edm_sigma_min=0.002,
-    rho=7, S_churn=0, S_min=0, S_max=float('inf'), S_noise=1,
-    extrap_to_zero_time=True,
-    randn_like=torch.randn_like, verbose=False, conditioning_scale=1.0,
-    ):
+                    num_steps=18, sigma_min=0.002, sigma_max=80, edm_sigma_min=0.002,
+                    rho=7, S_churn=0, S_min=0, S_max=float('inf'), S_noise=1,
+                    extrap_to_zero_time=True,
+                    randn_like=torch.randn_like, verbose=False, conditioning_scale=1.0,
+                    poisson_noise=False
+):
     
     # Time step discretization.
     step_indices = torch.arange(num_steps, dtype=torch.float64, device=latents.device)
@@ -44,7 +45,11 @@ def edm_sampler_dps(net, latents, fwd_func, data, data_latents=None, class_label
         # norm_grad, norm = grad_and_value(x_prev=x_cur, x0=denoised.to(torch.float32), \
         #                                 fwd_func=fwd_func, data=data, latents=data_latents)
         difference = data - fwd_func(denoised.to(torch.float32), latents=data_latents)
-        norm = torch.linalg.norm(difference)
+        if poisson_noise:
+            norm = torch.linalg.norm(difference) / data.abs()
+            norm = norm.mean()
+        else:
+            norm = torch.linalg.norm(difference)
         norm_grad = torch.autograd.grad(outputs=norm, inputs=x_cur)[0]
         x_next -= norm_grad * conditioning_scale
         # torch.cuda.empty_cache()  # Use only for debugging; can slow down training
