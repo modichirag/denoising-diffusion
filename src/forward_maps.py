@@ -89,6 +89,24 @@ def gaussian_blur(sigma: float, epsilon: float) -> callable:
     return fwd
 
 
+def gaussian_blur_pnoise(sigma: float, rate: float) -> callable:
+    """Returns a function that applies Gaussian blur to an input tensor."""
+    kernel_size = int(2 * math.ceil(3*sigma) + 1)
+    gaussian_blur = transforms.GaussianBlur(kernel_size=kernel_size, sigma=sigma)
+
+    def fwd(x, return_latents=False, generator=None, latents=None):
+        x_b = gaussian_blur(x)
+        rate_tensor = torch.ones(x_b.shape, device=x.device)*rate
+        noise = torch.poisson(rate_tensor, generator=generator)
+        x_b += noise
+        if return_latents:
+            return x_b, noise
+        else:
+            return x_b
+
+    return fwd
+
+
 def random_block_mask(block_size, epsilon):
     """
     Randomly masks out `num_blocks` rectangular regions of size `block_size` in `image`.
@@ -651,6 +669,7 @@ corruption_dict = {
     'random_mask': random_mask_image,
     'noise_and_mask': random_mask_image,
     'gaussian_blur': gaussian_blur,
+    'gaussian_blur_pnoise': gaussian_blur_pnoise,
     'block_mask': random_block_mask,
     'motion_blur': motion_blur,
     'random_motion': random_motion,
