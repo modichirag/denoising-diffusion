@@ -35,6 +35,11 @@ parser.add_argument("--gated", action='store_true', help="gated convolution if p
 parser.add_argument("--ode_steps", type=int, default=80, help="number of steps for ODE sampling")
 parser.add_argument("--multiview", action='store_true', help="change corruption every epoch if provided, else not")
 parser.add_argument("--max_pos_embedding", type=int, default=2, help="number of resamplings")
+parser.add_argument("--gamma_scale", type=float, default=0., help="noise added to interpolant")
+parser.add_argument("--diffusion_coeff", type=float, default=0., help="diffusion coeff for sde")
+parser.add_argument("--transport_steps", type=int, default=1, help="update transport map every n steps")
+parser.add_argument("--smodel", action='store_true', help="use sde model")
+
 args = parser.parse_args()
 print(args)
 if args.multiview:
@@ -63,6 +68,10 @@ except Exception as e:
     sys.exit()
 cname = "-".join([f"{i:0.2f}" for i in corruption_levels])
 folder = f"{args.dataset}-{corruption}-{cname}"
+if args.transport_steps != 1: folder = f"{folder}-tr{args.transport_steps}"
+if args.smodel: folder = f"{folder}-sde"
+if args.gamma_scale != 0: folder = f"{folder}-g{args.gamma_scale:0.2f}"
+if args.diffusion_coeff != 0: folder = f"{folder}-dc{args.diffusion_coeff:0.3f}"
 if args.prefix != "": folder = f"{args.prefix}-{folder}"
 if args.suffix != "": folder = f"{folder}-{args.suffix}"
 if args.subfolder != "": folder = f"{folder}/{args.subfolder}/"
@@ -71,6 +80,7 @@ folder = f"{BASEPATH}/{folder}/"
 results_folder = f"{folder}/results"
 os.makedirs(results_folder, exist_ok=True)
 print(f"Models will be loaded from folder: {folder}")
+
 use_latents, latent_dim = fwd_maps.parse_latents(corruption, D)
 if use_latents:
     print("Will use latents of dimension: ", latent_dim)
@@ -79,9 +89,9 @@ save_name = f"{results_folder}/fid_{n}k_{args.ode_steps}steps_{args.model}.json"
 print(f"Results will be saved in file: {save_name}")
 
 
-deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, n_steps=args.ode_steps).to(device)
+# Load models
 b = ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim, model_channels=args.channels, gated=gated, \
-                            max_pos_embedding=args.max_pos_embedding, zero_emb_channels_bwd=False).to(device)
+                            max_pos_embedding=args.max_pos_embedding, zero_emb_channels_bwd=True).to(device)
 ema_b = EMA(b)
 data = torch.load(f'{folder}/model-{args.model}.pt', weights_only=True)
 try:
@@ -95,8 +105,20 @@ except Exception as e :
     ema_b.load_state_dict(cleaned_ckpt)    
 b = ema_b.ema_model
 
+if 's_ema' in data:
+    sl = ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim, model_channels=channels, zero_emb_channels_bwd=True, max_pos_embedding=max_pos_embedding).to(device)
+    emas = EMA(s)
+    emas.load_state_dict(data['s_ema'])
+    s = emas.ema_model
+    assert args.gamma_scale != 0.
+else:
+    s = None
 
+# Setup deconvolver
+deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, n_steps=args.ode_steps, \
+                                      gamma_scale=args.gamma_scale, diffusion_coeff=args.diffusion_coeff).to(device)
 
+#FID evaluation
 fid_scorer = FIDEvaluation(
     batch_size=args.batch_size,
     dl=dl,
