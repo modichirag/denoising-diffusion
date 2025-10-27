@@ -51,7 +51,7 @@ class MLPVelocityField(torch.nn.Module):
 
 class DeconvolvingInterpolant(torch.nn.Module):
 
-    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1, diffusion_coeff=0.0, gamma_scale=0.0):
+    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1, diffusion_coeff=0.0, gamma_scale=0.0, sampler='euler'):
         super().__init__()
         self.push_fwd = push_fwd
         self.n_steps = n_steps
@@ -62,27 +62,34 @@ class DeconvolvingInterpolant(torch.nn.Module):
         self.resamples = resamples
         self.diffusion_coeff = diffusion_coeff
         self.gamma_scale = gamma_scale
-        if self.diffusion_coeff > 0.25 * self.gamma_scale:
+        self.sampler = sampler
+        if sampler == 'heun':
+            print("Using heun sampler")
+        if self.diffusion_coeff == 'gamma':
+            print("Diffusion coeff set to gamma scale at all times")
+        elif self.diffusion_coeff > 0.25 * self.gamma_scale:
             print("WARNING: diffusion_coeff is larger than 0.25 * gamma_scale, maximum noise during training.")
         if use_latents:
             print("Using latents for deonvolving")
 
+            
     def loss_fn(self, b, x, latent=None, x0=None, b_fixed=None, s=None, s_fixed=None):
         batch_size = x.shape[0]
         loss = 0.
         s_loss = 0.
-        # idx = [torch.randperm(batch_size)]
 
         if x0 is None: # x0 is the cleandata, use if provided
             b_transport = b_fixed if b_fixed is not None else b
             s_transport = s_fixed if s_fixed is not None else s
-            x0 = self.transport(b_transport, x, latent=latent, s=s_transport)
+            if self.sampler == 'euler':
+                x0 = self.transport(b_transport, x, latent=latent, s=s_transport)
+            elif self.sampler == 'heun':
+                x0 = self.transport_heun(b_transport, x, latent=latent, s=s_transport)
 
         for i in range(self.resamples):
             x1, latent1 = self.push_fwd(x0, return_latents=True)
             latent1 = latent1 if self.use_latents else None
-            # x1 = x1[idx]
-            # latent1 = latent1[idx] if latent is not None else None
+
             # pick data with probabability 1-alpha
             raw_mask = torch.bernoulli(torch.full((batch_size,), self.alpha)).to(x.device)
             mask = raw_mask.view(batch_size, *([1] * (x.ndim - 1)))
@@ -122,11 +129,71 @@ class DeconvolvingInterpolant(torch.nn.Module):
                 ti_scalar = 1 - (i-1) * self.delta_t
                 ti = (torch.ones(x.shape[0]) - (i-1) *self.delta_t).to(x.device)
                 v = b(Xt_prev, ti, latent)
-                vel_all.append(v)
+                if return_velocity:
+                    vel_all.append(v)
                 Xt_prev -= v * self.delta_t
                 if s is not None:
-                    Xt_prev -= s(Xt_prev, ti, latent) / (self.gamma_scale * (ti_scalar) * (1-ti_scalar) + 1e-3) * self.diffusion_coeff * self.delta_t # score term
-                    Xt_prev += math.sqrt(2. * self.diffusion_coeff) * self.sqrt_delta_t*torch.randn(x.shape).to(x.device) # diffusion term
+                    if (type(self.diffusion_coeff) == float) or (type(self.diffusion_coeff) == int):
+                        Xt_prev -= s(Xt_prev, ti, latent) / (self.gamma_scale * (ti_scalar) * (1-ti_scalar) + 1e-3) * self.diffusion_coeff * self.delta_t # score term
+                        Xt_prev += math.sqrt(2. * self.diffusion_coeff) * self.sqrt_delta_t*torch.randn(x.shape).to(x.device) # diffusion term
+                    elif self.diffusion_coeff == 'gamma':
+                        diffusion_coeff = self.gamma_scale * (ti_scalar) *  (1.0 - ti_scalar)
+                        Xt_prev -= s(Xt_prev, ti, latent) *  self.delta_t # score term
+                        Xt_prev += math.sqrt(2. * diffusion_coeff) * self.sqrt_delta_t*torch.randn(x.shape).to(x.device) # diffusion term
+                if return_trajectory:
+                    traj.append(Xt_prev)
+            Xt_final = Xt_prev
+
+        base_state = traj if return_trajectory else Xt_final
+        if return_velocity:
+            return base_state, vel_all
+        else:
+            return base_state
+
+        
+    def transport_heun(self, b, x, latent=None, s=None, return_trajectory=False, return_velocity=False):
+        traj = [x]
+        vel_all = []
+
+        # helper to build the (deterministic) drift
+        def drift(x, ti_scalar, latent):
+            ti_tensor = torch.ones(x.shape[0]).to(x.device) * ti_scalar
+            v = b(x, ti_tensor, latent)
+            score =  s(x, ti_tensor, latent)
+            if (type(self.diffusion_coeff) == float) or (type(self.diffusion_coeff) == int):
+                score_norm = self.diffusion_coeff / (self.gamma_scale * (ti_scalar) *  (1.0 - ti_scalar) + 1e-3)
+            elif self.diffusion_coeff == 'gamma':
+                score_norm = 1.
+            score_scaled = score * score_norm
+            a = -(v + score_scaled)
+            return a
+        
+        with torch.no_grad():
+            Xt_prev = x*1.
+            for i in range(1, self.n_steps+1):
+                ti_scalar = 1 - (i-1) * self.delta_t
+                ti = torch.ones(x.shape[0]).to(x.device) * ti_scalar
+                if s is None:
+                    v = b(Xt_prev, ti, latent)                    
+                    Xt_prev -= v * self.delta_t
+                else:
+                    a = drift(Xt_prev, ti_scalar, latent) #return is -ve already
+                    z =  torch.randn(x.shape).to(x.device)
+                    if (type(self.diffusion_coeff) == float) or (type(self.diffusion_coeff) == int):
+                        diff_norm = math.sqrt(2. * self.diffusion_coeff) * self.sqrt_delta_t
+                    elif self.diffusion_coeff == 'gamma':
+                        diffusion_coeff = self.gamma_scale * (ti_scalar) *  (1.0 - ti_scalar)
+                        diff_norm = math.sqrt(2. * diffusion_coeff) * self.sqrt_delta_t
+                    noise_term = z*diff_norm
+                    X_pred = Xt_prev + a * self.delta_t + noise_term
+
+                    # correction term
+                    ti_scalar_next = ti_scalar - self.delta_t
+                    if ti_scalar_next > 0:                        
+                        a_pred = drift(X_pred, ti_scalar_next, latent)
+                        Xt_prev = Xt_prev + 0.5 * (a + a_pred) * self.delta_t + noise_term
+                    else:
+                        Xt_prev = X_pred
                 if return_trajectory:
                     traj.append(Xt_prev)
             Xt_final = Xt_prev
