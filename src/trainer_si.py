@@ -274,7 +274,7 @@ class Trainer:
                 if self.s_model is not None:
                     self.s_model.train()
 
-                total_loss = 0.
+                total_loss, total_dloss, total_sloss = 0., 0., 0.
                 for _ in range(self.gradient_accumulate_every):
                     data, obs, latents = next(self.dl)
                     data, obs = push_to_device(data, obs, device=device)
@@ -286,13 +286,21 @@ class Trainer:
                             loss, s_loss = self.deconvolver.loss_fn(self.model, obs, latents, b_fixed=transport_map, s=self.s_model, s_fixed=transport_score)
                         loss = loss.mean()
                         loss = loss / self.gradient_accumulate_every
-                        s_loss = s_loss.mean() if s_loss is not None else None         
+                        if s_loss is not None:
+                            s_loss = s_loss.mean()
+                            s_loss = s_loss / self.gradient_accumulate_every
 
                     curr_loss = loss.detach()
                     if self.ddp : dist.all_reduce(curr_loss, op=dist.ReduceOp.AVG)
-                    total_loss += curr_loss.item()
+                    total_dloss += curr_loss.item()
+
+                    if s_loss is not None:
+                        curr_sloss = s_loss.detach() 
+                        if self.ddp : dist.all_reduce(curr_sloss, op=dist.ReduceOp.AVG)
+                        total_sloss = total_sloss + curr_sloss.item() 
+                    total_loss += total_dloss + total_sloss
+
                     if self.s_model is not None:
-                        s_loss = s_loss / self.gradient_accumulate_every
                         s_loss.backward(retain_graph=True)
                     loss.backward()
 
@@ -301,7 +309,7 @@ class Trainer:
                             p.grad = p.grad.contiguous()
 
                 pbar.set_description(f'loss: {total_loss:.4f}', refresh=pbar_refresh)
-                losses.append(total_loss)
+                losses.append([total_loss, total_dloss, total_sloss])
 
                 torch.cuda.synchronize()
                 _ = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
@@ -360,8 +368,8 @@ class Trainer:
                         if divisible_by(self.step, self.save_and_sample_every):
                             np.save(f"{self.results_folder}/losses", losses)
                             self.save("latest")
-                            if losses[-1] < min_loss:
-                                min_loss = losses[-1]
+                            if losses[-1][0] < min_loss:
+                                min_loss = losses[-1][0]
                                 self.save("best")
                                 print(f"New best model at step {self.step} with loss {min_loss:.4f}")
 
