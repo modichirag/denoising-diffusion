@@ -177,7 +177,7 @@ class DeconvolvingInterpolant(torch.nn.Module):
                     v = b(Xt_prev, ti, latent)                    
                     Xt_prev -= v * self.delta_t
                 else:
-                    a = drift(Xt_prev, ti_scalar, latent) #return is -ve already
+                    # first add noise. Then eval two drift. Then add avg drift to noised point.
                     z =  torch.randn(x.shape).to(x.device)
                     if (type(self.diffusion_coeff) == float) or (type(self.diffusion_coeff) == int):
                         diff_norm = math.sqrt(2. * self.diffusion_coeff) * self.sqrt_delta_t
@@ -185,13 +185,15 @@ class DeconvolvingInterpolant(torch.nn.Module):
                         diffusion_coeff = self.gamma_scale * (ti_scalar) *  (1.0 - ti_scalar)
                         diff_norm = math.sqrt(2. * diffusion_coeff) * self.sqrt_delta_t
                     noise_term = z*diff_norm
-                    X_pred = Xt_prev + a * self.delta_t + noise_term
-
+                    Xt_prev += noise_term
+                    
+                    a = drift(Xt_prev, ti_scalar, latent) #return is -ve already
+                    X_pred = Xt_prev + a * self.delta_t
                     # correction term
                     ti_scalar_next = ti_scalar - self.delta_t
                     if ti_scalar_next > 0:                        
                         a_pred = drift(X_pred, ti_scalar_next, latent)
-                        Xt_prev = Xt_prev + 0.5 * (a + a_pred) * self.delta_t + noise_term
+                        Xt_prev = Xt_prev + 0.5 * (a + a_pred) * self.delta_t  #a is negated already
                     else:
                         Xt_prev = X_pred
                 if return_trajectory:
@@ -265,13 +267,24 @@ class DeconvolvingInterpolantCombined(torch.nn.Module):
             for i in range(1, self.n_steps+1):
                 ti_scalar = 1 - (i-1) * self.delta_t
                 ti = (torch.ones(x.shape[0]) - (i-1) *self.delta_t).to(x.device)
-                # drift term
-                v = b(Xt_prev, ti, latent)
-                Xt_prev -= v * self.delta_t
-                # diff term
+                z = torch.randn(x.shape).to(x.device)    
                 diffusion_coeff = self.gamma_scale * (ti_scalar) * (1-ti_scalar) 
-                z = torch.randn(x.shape).to(x.device)
-                Xt_prev += math.sqrt(2. * diffusion_coeff) * self.sqrt_delta_t* z  # diffusion term                            
+                
+                if self.sampler == 'euler':
+                    v = b(Xt_prev, ti, latent)
+                    Xt_prev -= v * self.delta_t
+                    Xt_prev += math.sqrt(2. * diffusion_coeff) * self.sqrt_delta_t* z  # diffusion term                            
+                elif self.sampler == 'heun':
+                    Xt_prev += math.sqrt(2. * diffusion_coeff) * self.sqrt_delta_t* z
+                    v = b(Xt_prev, ti, latent)
+                    X_pred = Xt_prev - v * self.delta_t
+                    # correction term
+                    ti_scalar_next = ti_scalar - self.delta_t
+                    ti_next = (torch.ones(x.shape[0]) * ti_scalar_next).to(x.device)
+                    if ti_scalar_next > 0:                        
+                        v_pred = b(X_pred, ti_next, latent)
+                        Xt_prev = Xt_prev - 0.5 * (v + v_pred) * self.delta_t
+                
             Xt_final = Xt_prev
 
         return Xt_final
