@@ -8,9 +8,10 @@ sys.path.append('./src/')
 from utils import count_parameters, make_serializable
 from custom_datasets import dataset_dict, ImagesOnly, CorruptedDataset
 from networks import ConditionalDhariwalUNet
-from interpolant_utils import DeconvolvingInterpolant
+from interpolant_utils import DeconvolvingInterpolant,  DeconvolvingInterpolantCombined
 import forward_maps as fwd_maps
 from trainer_si import Trainer
+from utils import remove_all_prefix
 import argparse
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -41,6 +42,9 @@ parser.add_argument("--diffusion_coeff", type=float, default=0., help="diffusion
 parser.add_argument("--transport_steps", type=int, default=1, help="update transport map every n steps")
 parser.add_argument("--smodel", action='store_true', help="use sde model")
 parser.add_argument("--cleansteps", type=int, default=-1, help="update transport map every n steps")
+parser.add_argument("--load_model_path", type=str, default='', help="load model from path")
+parser.add_argument("--sampler", type=str, default='euler', help="load model from path")
+parser.add_argument("--combinedsde", action='store_true', help="learn combined drift for sde model")
 
 args = parser.parse_args()
 print(args)
@@ -82,7 +86,8 @@ if args.cleansteps != -1: folder = f"{folder}-cds{args.cleansteps}"
 if args.transport_steps != 1: folder = f"{folder}-tr{args.transport_steps}"
 if args.smodel: folder = f"{folder}-sde"
 if args.gamma_scale != 0: folder = f"{folder}-g{args.gamma_scale:0.2f}"
-if args.diffusion_coeff != 0: folder = f"{folder}-dc{args.diffusion_coeff:0.3f}"
+#if args.diffusion_coeff != 0: folder = f"{folder}-dc{args.diffusion_coeff:0.3f}"
+if args.smodel: folder = f"{folder}-dc{args.diffusion_coeff:0.3f}"
 if args.prefix != "": folder = f"{args.prefix}-{folder}"
 if args.suffix != "": folder = f"{folder}-{args.suffix}"
 results_folder = f"{BASEPATH}/{folder}/"
@@ -109,16 +114,41 @@ if args.smodel:
         print("WARNING: SCORE NETWORK give with gamma=0. Setting gamma to 1.")
         args.gamma_scale = 1.
     if args.diffusion_coeff == 0. :
-        print("WARNING: SCORE NETWORK give with diffusion coeff=0. Setting it to value of gamma*0.25 i.e. ". args.gamma_scale * 0.25)
-        args.diffusion_coeff = args.gamma_scale * 0.25
+        #print("WARNING: SCORE NETWORK give with diffusion coeff=0. Setting it to value of gamma*0.25 i.e. ", args.gamma_scale * 0.25)
+        print("WARNING: SCORE NETWORK give with diffusion coeff=0. Setting it to value gamma at all times")
+        args.diffusion_coeff = "gamma" #args.gamma_scale * 0.25
 else:
     s_model = None
-    
+
+# load model if a path is provided
+if args.load_model_path:
+    print("Loading model from: ", args.load_model_path)
+    from ema_pytorch import EMA
+    try:
+        data = torch.load(f'{BASEPATH}/{args.load_model_path}', weights_only=True, map_location='cpu')
+    except:
+        data = torch.load(f'{args.load_model_path}', weights_only=True, map_location='cpu')
+    ema = EMA(b)
+    ema.load_state_dict(remove_all_prefix(data['ema']))
+    b.load_state_dict(ema.ema_model.state_dict())
+    if ('s_ema' in data.keys()) and args.smodel:
+        print("Loading sde model")
+        ema = EMA(s_model)
+        ema.load_state_dict(remove_all_prefix(data['s_ema']))
+        s_model.load_state_dict(ema.ema_model.state_dict())
+
+
 #b = torch.compile(b)
 print("Parameter count : ", count_parameters(b))
-deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, \
+if args.combinedsde:
+    deconvolver = DeconvolvingInterpolantCombined(fwd_func, use_latents=use_latents, \
                                       alpha=args.alpha, resamples=args.resamples, n_steps=args.ode_steps, \
-                                      gamma_scale=args.gamma_scale, diffusion_coeff=args.diffusion_coeff).to(device)
+                                      gamma_scale=args.gamma_scale, sampler=args.sampler).to(device)
+else:
+    deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, \
+                                      alpha=args.alpha, resamples=args.resamples, n_steps=args.ode_steps, \
+                                      gamma_scale=args.gamma_scale, diffusion_coeff=args.diffusion_coeff,
+                                      sampler=args.sampler).to(device)
 corrupt_dataset = CorruptedDataset(image_dataset, deconvolver.push_fwd, \
                                    tied_rng=not(args.multiview), base_seed=args.dataset_seed)
 
