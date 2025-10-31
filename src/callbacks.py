@@ -181,19 +181,45 @@ def save_fig_manifold(idx, b, deconvolver, dataloader, device, results_folder, l
 
 
 def save_losses_fig(losses, results_folder):
-    steps = np.arange(len(losses))
+    arr = np.asarray(losses)
+    series = []
+    labels = []
+    if arr.ndim == 2 and arr.shape[1] >= 3:
+        total, drift, denoiser = arr[:, 0], arr[:, 1], arr[:, 2]
+        is_ode = np.allclose(denoiser, 0.0, atol=1e-12) and np.allclose(total, drift, atol=1e-12)
+        if is_ode:
+            series = [drift]
+            labels = ['drift_loss']
+        else:
+            series = [total, drift, denoiser]
+            labels = ['total_loss', 'drift_loss', 'denoiser_loss']
+    else:
+        # 1D (or anything else): treat as drift-only
+        series = [arr.squeeze()]
+        labels = ['drift_loss']
+
+    steps = np.arange(len(series[0]))
     fig, axs = plt.subplots(1, 2, figsize=(12, 4))
-    axs[0].semilogy(steps, losses, marker='.', linestyle='-', markersize=4, alpha=0.7)
+    # semilogy
+    for y, lab in zip(series, labels):
+        axs[0].semilogy(steps, y, marker='.', linestyle='-', markersize=4, alpha=0.7, label=lab)
     axs[0].set_xlabel("Steps")
     axs[0].set_ylabel("Loss (log scale)")
     axs[0].set_title("Loss Curve (Semi-Log Y Scale)")
     axs[0].grid(True, which="both", ls="--", alpha=0.5)
-    axs[1].loglog(steps, losses, marker='.', linestyle='-', markersize=4, alpha=0.7, color='orangered')
+    axs[0].legend(loc='best', fontsize='small')
+
+    # loglog
+    for y in series:
+        axs[1].loglog(steps, y, marker='.', linestyle='-', markersize=4, alpha=0.7)
     axs[1].set_xlabel("Steps (log scale)")
     axs[1].set_ylabel("Loss (log scale)")
     axs[1].set_title("Loss Curve (Log-Log Scale)")
     axs[1].grid(True, which="both", ls="--", alpha=0.5)
+    axs[1].legend(labels, loc='best', fontsize='small')
+
     plt.tight_layout()
-    print(os.path.join(results_folder, 'losses.png'))
-    plt.savefig(os.path.join(results_folder, 'losses.png'), dpi=300, bbox_inches='tight')
+    outfile = os.path.join(results_folder, 'losses.png')
+    print(outfile)
+    plt.savefig(outfile, dpi=300, bbox_inches='tight')
     plt.close()
