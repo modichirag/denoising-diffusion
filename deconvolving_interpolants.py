@@ -45,6 +45,7 @@ parser.add_argument("--cleansteps", type=int, default=-1, help="update transport
 parser.add_argument("--load_model_path", type=str, default='', help="load model from path")
 parser.add_argument("--sampler", type=str, default='euler', help="load model from path")
 parser.add_argument("--combinedsde", action='store_true', help="learn combined drift for sde model")
+parser.add_argument("--randomize_t", action='store_true', help="randomize time stepping")
 
 args = parser.parse_args()
 print(args)
@@ -88,6 +89,8 @@ if args.smodel: folder = f"{folder}-sde"
 if args.gamma_scale != 0: folder = f"{folder}-g{args.gamma_scale:0.2f}"
 #if args.diffusion_coeff != 0: folder = f"{folder}-dc{args.diffusion_coeff:0.3f}"
 if args.smodel: folder = f"{folder}-dc{args.diffusion_coeff:0.3f}"
+if args.sampler != 'euler': folder = f"{folder}-{args.sampler}"
+if args.randomize_t: folder = f"{folder}-randt"
 if args.prefix != "": folder = f"{args.prefix}-{folder}"
 if args.suffix != "": folder = f"{folder}-{args.suffix}"
 results_folder = f"{BASEPATH}/{folder}/"
@@ -143,12 +146,13 @@ print("Parameter count : ", count_parameters(b))
 if args.combinedsde:
     deconvolver = DeconvolvingInterpolantCombined(fwd_func, use_latents=use_latents, \
                                       alpha=args.alpha, resamples=args.resamples, n_steps=args.ode_steps, \
-                                      gamma_scale=args.gamma_scale, sampler=args.sampler).to(device)
+                                                  gamma_scale=args.gamma_scale, sampler=args.sampler,
+                                                  randomize_time=args.randomize_t).to(device)
 else:
     deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, \
                                       alpha=args.alpha, resamples=args.resamples, n_steps=args.ode_steps, \
                                       gamma_scale=args.gamma_scale, diffusion_coeff=args.diffusion_coeff,
-                                      sampler=args.sampler).to(device)
+                                          sampler=args.sampler, randomize_time=args.randomize_t).to(device)
 corrupt_dataset = CorruptedDataset(image_dataset, deconvolver.push_fwd, \
                                    tied_rng=not(args.multiview), base_seed=args.dataset_seed)
 

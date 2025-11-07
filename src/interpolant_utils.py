@@ -1,6 +1,7 @@
 import torch
 import math
 from networks import MLPResNet, PositionalEmbedding
+import numpy as np
 
 class VelocityField(torch.nn.Module):
 
@@ -51,12 +52,13 @@ class MLPVelocityField(torch.nn.Module):
 
 class DeconvolvingInterpolant(torch.nn.Module):
 
-    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1, diffusion_coeff=0.0, gamma_scale=0.0, sampler='euler'):
+    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1, diffusion_coeff=0.0, gamma_scale=0.0, sampler='euler', randomize_time=False):
         super().__init__()
         self.push_fwd = push_fwd
         self.n_steps = n_steps
         self.delta_t = 1 / self.n_steps
         self.sqrt_delta_t = self.delta_t**0.5
+        self.randomize_time = randomize_time
         self.use_latents = use_latents
         self.alpha = alpha
         self.resamples = resamples
@@ -210,7 +212,7 @@ class DeconvolvingInterpolant(torch.nn.Module):
 
 class DeconvolvingInterpolantCombined(torch.nn.Module):
 
-    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1,  gamma_scale=0.1, sampler='euler'):
+    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1,  gamma_scale=0.1, sampler='euler', randomize_time=False):
         super().__init__()
         print("Learning combined drift from drift + score network")
         self.push_fwd = push_fwd
@@ -222,6 +224,11 @@ class DeconvolvingInterpolantCombined(torch.nn.Module):
         self.resamples = resamples
         self.gamma_scale = gamma_scale
         self.sampler = sampler
+        self.randomize_time = randomize_time
+        if self.randomize_time:
+            print("Randomize time grid")
+        if self.sampler == 'heun':
+            print("Using heun sampler")
         if use_latents:
             print("Using latents for deonvolving")
         
@@ -262,28 +269,38 @@ class DeconvolvingInterpolantCombined(torch.nn.Module):
     def transport(self, b, x, latent=None, return_trajectory=False, return_velocity=False, s=None):
         traj = [x]
         vel_all = []
+        if self.randomize_time:
+            times = sorted(list(np.random.uniform(0, 1, self.n_steps-1)), reverse=True)
+            times = [1.0] + times + [0.0]
+            for i in range(len(times) - 1):
+                dt = times[i] - times[i + 1]
+                assert dt > 0, f"Non-positive dt at i={i}: {dt}"
+        else:
+            times = [1 - (i-1) * self.delta_t for i in range(1, self.n_steps+1)]
         with torch.no_grad():
             Xt_prev = x*1.
-            for i in range(1, self.n_steps+1):
-                ti_scalar = 1 - (i-1) * self.delta_t
-                ti = (torch.ones(x.shape[0]) - (i-1) *self.delta_t).to(x.device)
+            for i in range(len(times)-1):
+                ti_scalar = times[i]
+                ti_scalar_next = times[i+1]
+                delta_t = ti_scalar - ti_scalar_next #reversed
+                sqrt_delta_t = delta_t ** 0.5
+                ti = (torch.ones(x.shape[0]) * ti_scalar).to(x.device)
                 z = torch.randn(x.shape).to(x.device)    
                 diffusion_coeff = self.gamma_scale * (ti_scalar) * (1-ti_scalar) 
                 
                 if self.sampler == 'euler':
                     v = b(Xt_prev, ti, latent)
-                    Xt_prev -= v * self.delta_t
-                    Xt_prev += math.sqrt(2. * diffusion_coeff) * self.sqrt_delta_t* z  # diffusion term                            
+                    Xt_prev -= v * delta_t
+                    Xt_prev += math.sqrt(2. * diffusion_coeff) * sqrt_delta_t* z  # diffusion term                            
                 elif self.sampler == 'heun':
-                    Xt_prev += math.sqrt(2. * diffusion_coeff) * self.sqrt_delta_t* z
+                    Xt_prev += math.sqrt(2. * diffusion_coeff) * sqrt_delta_t* z
                     v = b(Xt_prev, ti, latent)
-                    X_pred = Xt_prev - v * self.delta_t
+                    X_pred = Xt_prev - v * delta_t
                     # correction term
-                    ti_scalar_next = ti_scalar - self.delta_t
                     ti_next = (torch.ones(x.shape[0]) * ti_scalar_next).to(x.device)
                     if ti_scalar_next > 0:                        
                         v_pred = b(X_pred, ti_next, latent)
-                        Xt_prev = Xt_prev - 0.5 * (v + v_pred) * self.delta_t
+                        Xt_prev = Xt_prev - 0.5 * (v + v_pred) * delta_t
                 
             Xt_final = Xt_prev
 
