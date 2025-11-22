@@ -91,6 +91,7 @@ if args.gamma_scale != 0: folder = f"{folder}-g{args.gamma_scale:0.2f}"
 if args.smodel: folder = f"{folder}-dc{args.diffusion_coeff:0.3f}"
 if args.sampler != 'euler': folder = f"{folder}-{args.sampler}"
 if args.randomize_t: folder = f"{folder}-randt"
+if args.combinedsde: folder = f"{folder}-combined"
 if args.prefix != "": folder = f"{args.prefix}-{folder}"
 if args.suffix != "": folder = f"{folder}-{args.suffix}"
 results_folder = f"{BASEPATH}/{folder}/"
@@ -117,9 +118,8 @@ if args.smodel:
         print("WARNING: SCORE NETWORK give with gamma=0. Setting gamma to 1.")
         args.gamma_scale = 1.
     if args.diffusion_coeff == 0. :
-        #print("WARNING: SCORE NETWORK give with diffusion coeff=0. Setting it to value of gamma*0.25 i.e. ", args.gamma_scale * 0.25)
         print("WARNING: SCORE NETWORK give with diffusion coeff=0. Setting it to value gamma at all times")
-        args.diffusion_coeff = "gamma" #args.gamma_scale * 0.25
+        args.diffusion_coeff = "gamma"
 else:
     s_model = None
 
