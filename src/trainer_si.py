@@ -68,7 +68,9 @@ class Trainer:
             callback_fn = None,
             validation_data = None,
             callback_kwargs = {},
-            s_model = None
+            s_model = None,
+            opt_state=None,
+            return_opt_state=False
     ):
         super().__init__()
 
@@ -125,14 +127,23 @@ class Trainer:
         if optimizer is not None:
             self.opt = optimizer
         else:
-            if weight_decay == 0:
-                self.opt = Adam(model.parameters(), lr = train_lr, betas = adam_betas)
-                if s_model is not None:
-                    self.s_opt = Adam(s_model.parameters(), lr = train_lr, betas = adam_betas)
-            else:
-                self.opt = AdamW(model.parameters(), lr = train_lr, betas = adam_betas, weight_decay=weight_decay)
-                if s_model is not None:
-                    self.s_opt = AdamW(s_model.parameters(), lr = train_lr, betas = adam_betas, weight_decay=weight_decay)
+            opt = Adam if weight_decay == 0 else AdamW
+            self.opt = opt(model.parameters(), lr = train_lr, betas = adam_betas, weight_decay=weight_decay)
+            if s_model is not None:
+                self.s_opt = Adam(s_model.parameters(), lr = train_lr, betas = adam_betas, weight_decay=weight_decay)            
+            # if weight_decay == 0:
+            #     self.opt = Adam(model.parameters(), lr = train_lr, betas = adam_betas)
+            #     if s_model is not None:
+            #         self.s_opt = Adam(s_model.parameters(), lr = train_lr, betas = adam_betas)
+            # else:
+            #     self.opt = AdamW(model.parameters(), lr = train_lr, betas = adam_betas, weight_decay=weight_decay)
+            #     if s_model is not None:
+            #         self.s_opt = AdamW(s_model.parameters(), lr = train_lr, betas = adam_betas, weight_decay=weight_decay)
+        self.return_opt_state = return_opt_state
+        if opt_state is not None:
+            self.opt.load_state_dict(opt_state[0])
+            if s_model is not None: self.s_opt.load_state_dict(opt_state[1])
+                
         if lr_scheduler is not None:
             num_warmup_steps = int(warmup_fraction * train_num_steps)
             self.lr_scheduler = get_cosine_schedule_with_warmup(
@@ -426,4 +437,8 @@ class Trainer:
 
             print('training complete')
 
+        if self.return_opt_state:
+            opt = [self.opt.state_dict()]
+            if self.s_model: opt.append(self.s_opt.state_dict())
+            return losses, opt
         return losses
