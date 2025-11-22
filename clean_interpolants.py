@@ -11,7 +11,7 @@ from networks import ConditionalDhariwalUNet
 from custom_datasets import dataset_dict, ImagesOnly, cifar10_inverse_transforms
 from interpolant_utils import DeconvolvingInterpolant, VelocityField
 import forward_maps as fwd_maps
-from utils import remove_orig_mod_prefix
+from utils import remove_orig_mod_prefix, remove_all_prefix
 from tqdm.auto import tqdm
 
 
@@ -33,6 +33,16 @@ parser.add_argument("--gated", action='store_true', help="gated convolution if p
 parser.add_argument("--ode_steps", type=int, default=64, help="number of steps for ODE sampling")
 parser.add_argument("--multiview", action='store_true', help="change corruption every epoch if provided, else not")
 parser.add_argument("--max_pos_embedding", type=int, default=2, help="number of resamplings")
+parser.add_argument("--gamma_scale", type=float, default=0., help="noise added to interpolant")
+parser.add_argument("--diffusion_coeff", type=float, default=0., help="diffusion coeff for sde")
+parser.add_argument("--transport_steps", type=int, default=1, help="update transport map every n steps")
+parser.add_argument("--smodel", action='store_true', help="use sde model")
+parser.add_argument("--cleansteps", type=int, default=-1, help="update transport map every n steps")
+parser.add_argument("--load_model_path", type=str, default='', help="load model from path")
+parser.add_argument("--sampler", type=str, default='euler', help="load model from path")
+parser.add_argument("--combinedsde", action='store_true', help="learn combined drift for sde model")
+parser.add_argument("--randomize_t", action='store_true', help="randomize time stepping")
+
 args = parser.parse_args()
 print(args)
 if args.multiview:
@@ -59,20 +69,39 @@ except Exception as e:
     sys.exit()
 cname = "-".join([f"{i:0.2f}" for i in corruption_levels])
 folder = f"{args.dataset}-{corruption}-{cname}"
+if args.cleansteps != -1: folder = f"{folder}-cds{args.cleansteps}"
+if args.transport_steps != 1: folder = f"{folder}-tr{args.transport_steps}"
+if args.smodel: folder = f"{folder}-sde"
+if args.gamma_scale != 0: folder = f"{folder}-g{args.gamma_scale:0.2f}"
+#if args.diffusion_coeff != 0: folder = f"{folder}-dc{args.diffusion_coeff:0.3f}"
+if args.smodel: folder = f"{folder}-dc{args.diffusion_coeff:0.3f}"
+if args.sampler != 'euler': folder = f"{folder}-{args.sampler}"
+if args.randomize_t: folder = f"{folder}-randt"
+if args.combinedsde: folder = f"{folder}-combined"
 if args.prefix != "": folder = f"{args.prefix}-{folder}"
 if args.suffix != "": folder = f"{folder}-{args.suffix}"
 if args.subfolder != "": folder = f"{folder}/{args.subfolder}/"
-
 folder = f"{BASEPATH}/{folder}/"
 results_folder = f"{folder}/cleaned_{args.model}/"
 os.makedirs(results_folder, exist_ok=True)
 print(f"Models will be loaded from folder: {folder}")
+
+
 use_latents, latent_dim = fwd_maps.parse_latents(corruption, D)
 if use_latents:
     print("Will use latents of dimension: ", latent_dim)
 
+if args.combinedsde:
+    deconvolver = DeconvolvingInterpolantCombined(fwd_func, use_latents=use_latents, \
+                                                n_steps=args.ode_steps, gamma_scale=args.gamma_scale, sampler=args.sampler,
+                                                  randomize_time=args.randomize_t).to(device)
+else:
+    deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, \
+                                          n_steps=args.ode_steps, gamma_scale=args.gamma_scale, diffusion_coeff=args.diffusion_coeff,
+                                          sampler=args.sampler, randomize_time=args.randomize_t).to(device)
 
-deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, n_steps=args.ode_steps).to(device)
+
+# setup the model
 b = ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim, model_channels=args.channels, gated=gated, \
                             max_pos_embedding=args.max_pos_embedding, zero_emb_channels_bwd=True).to(device)
 ema_b = EMA(b)
@@ -87,6 +116,28 @@ except Exception as e :
     cleaned_ckpt = remove_orig_mod_prefix(data['ema'])
     ema_b.load_state_dict(cleaned_ckpt)    
 b = ema_b.ema_model.to(device)
+
+if ('s_ema' in data.keys()) and args.smodel:
+    print("SDE training")
+    s_model =  ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim,
+                            model_channels=args.channels, gated=gated, \
+                            max_pos_embedding=args.max_pos_embedding).to(device)
+    ema = EMA(s_model)
+    ema.load_state_dict(remove_all_prefix(data['s_ema']))
+    s_model.load_state_dict(ema.ema_model.state_dict())
+
+    # set other params
+    if args.gamma_scale == 0. :
+        print("WARNING: SCORE NETWORK give with gamma=0. Setting gamma to 1.")
+        args.gamma_scale = 1.
+    if args.diffusion_coeff == 0. :
+        # print("WARNING: SCORE NETWORK give with diffusion coeff=0. Setting it to value of gamma*0.25 i.e. ". args.gamma_scale * 0.25)
+        # args.diffusion_coeff = args.gamma_scale * 0.25
+        print("WARNING: SCORE NETWORK give with diffusion coeff=0. Setting it to value gamma at all times")
+        args.diffusion_coeff = "gamma" 
+else:
+    s_model = None
+
 
 
 @torch.inference_mode()

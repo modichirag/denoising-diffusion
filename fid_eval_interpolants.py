@@ -9,7 +9,7 @@ import numpy as np
 sys.path.append('./src/')
 from networks import ConditionalDhariwalUNet
 from custom_datasets import dataset_dict, ImagesOnly, cifar10_inverse_transforms
-from interpolant_utils import DeconvolvingInterpolant
+from interpolant_utils import DeconvolvingInterpolant, DeconvolvingInterpolantCombined
 import forward_maps as fwd_maps
 from fid_evaluation import FIDEvaluation, calculate_frechet_distance
 from utils import infinite_dataloader,  num_to_groups, remove_orig_mod_prefix
@@ -39,6 +39,10 @@ parser.add_argument("--gamma_scale", type=float, default=0., help="noise added t
 parser.add_argument("--diffusion_coeff", type=float, default=0., help="diffusion coeff for sde")
 parser.add_argument("--transport_steps", type=int, default=1, help="update transport map every n steps")
 parser.add_argument("--smodel", action='store_true', help="use sde model")
+parser.add_argument("--load_model_path", type=str, default='', help="load model from path")
+parser.add_argument("--sampler", type=str, default='euler', help="load model from path")
+parser.add_argument("--combinedsde", action='store_true', help="learn combined drift for sde model")
+parser.add_argument("--randomize_t", action='store_true', help="randomize time stepping")
 
 args = parser.parse_args()
 print(args)
@@ -71,7 +75,11 @@ folder = f"{args.dataset}-{corruption}-{cname}"
 if args.transport_steps != 1: folder = f"{folder}-tr{args.transport_steps}"
 if args.smodel: folder = f"{folder}-sde"
 if args.gamma_scale != 0: folder = f"{folder}-g{args.gamma_scale:0.2f}"
-if args.diffusion_coeff != 0: folder = f"{folder}-dc{args.diffusion_coeff:0.3f}"
+#if args.diffusion_coeff != 0: folder = f"{folder}-dc{args.diffusion_coeff:0.3f}"
+if args.smodel: folder = f"{folder}-dc{args.diffusion_coeff:0.3f}"
+if args.sampler != 'euler': folder = f"{folder}-{args.sampler}"
+if args.randomize_t: folder = f"{folder}-randt"
+if args.combinedsde: folder = f"{folder}-combined"
 if args.prefix != "": folder = f"{args.prefix}-{folder}"
 if args.suffix != "": folder = f"{folder}-{args.suffix}"
 if args.subfolder != "": folder = f"{folder}/{args.subfolder}/"
@@ -90,33 +98,50 @@ print(f"Results will be saved in file: {save_name}")
 
 
 # Load models
-b = ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim, model_channels=args.channels, gated=gated, \
-                            max_pos_embedding=args.max_pos_embedding, zero_emb_channels_bwd=True).to(device)
-ema_b = EMA(b)
-data = torch.load(f'{folder}/model-{args.model}.pt', weights_only=True)
-try:
-    b.load_state_dict(data['model'])
-    ema_b.load_state_dict(data['ema'])
-except Exception as e :
-    print("Saved compiled model. Trying to load without compilation")
-    cleaned_ckpt = remove_orig_mod_prefix(data['model'])
-    b.load_state_dict(cleaned_ckpt)
-    cleaned_ckpt = remove_orig_mod_prefix(data['ema'])
-    ema_b.load_state_dict(cleaned_ckpt)    
-b = ema_b.ema_model
+for emb  in [True, False]:
+    try:
+        b = ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim, model_channels=args.channels, gated=gated, \
+                                    max_pos_embedding=args.max_pos_embedding, zero_emb_channels_bwd=emb).to(device)
+        ema_b = EMA(b)
+        data = torch.load(f'{folder}/model-{args.model}.pt', weights_only=True)
+        cleaned_ckpt = remove_orig_mod_prefix(data['model'])
+        b.load_state_dict(cleaned_ckpt)
+        cleaned_ckpt = remove_orig_mod_prefix(data['ema'])
+        ema_b.load_state_dict(cleaned_ckpt)    
+        b = ema_b.ema_model
 
-if 's_ema' in data:
-    sl = ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim, model_channels=channels, zero_emb_channels_bwd=True, max_pos_embedding=max_pos_embedding).to(device)
-    emas = EMA(s)
-    emas.load_state_dict(data['s_ema'])
-    s = emas.ema_model
-    assert args.gamma_scale != 0.
-else:
-    s = None
+        s = None
+        if 's_ema' in data:
+            s = ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim, model_channels=channels, max_pos_embedding=args.max_pos_embedding, zero_emb_channels_bwd=emb).to(device)
+            emas = EMA(s)
+            emas.load_state_dict(cleaned_ckpt['s_ema'])
+            s = emas.ema_model
+            assert args.gamma_scale != 0.
+            diffusion_coeff = 'gamma' if args.diffusion_coeff == 0.0 else  args.diffusion_coeff            
+        continue
+    
+    except Exception as e:
+        print(e)
 
+if s is None:
+    print('score network loaded')
+
+    
 # Setup deconvolver
-deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, n_steps=args.ode_steps, \
-                                      gamma_scale=args.gamma_scale, diffusion_coeff=args.diffusion_coeff).to(device)
+# deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, n_steps=args.ode_steps, \
+#                                       gamma_scale=args.gamma_scale, diffusion_coeff=args.diffusion_coeff).to(device)
+#b = torch.compile(b)
+if args.combinedsde:
+    deconvolver = DeconvolvingInterpolantCombined(fwd_func, use_latents=use_latents, \
+                                      n_steps=args.ode_steps, \
+                                                  gamma_scale=args.gamma_scale, sampler=args.sampler,
+                                                  randomize_time=args.randomize_t).to(device)
+else:
+    deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, \
+                                      n_steps=args.ode_steps, \
+                                      gamma_scale=args.gamma_scale, diffusion_coeff=args.diffusion_coeff,
+                                          sampler=args.sampler, randomize_time=args.randomize_t).to(device)
+
 
 #FID evaluation
 fid_scorer = FIDEvaluation(
@@ -137,7 +162,7 @@ def get_cleaned_samples():
     image = next(dl).to(device)
     corrupted, latents = deconvolver.push_fwd(image, return_latents=True)
     latents = latents if use_latents else None
-    clean = deconvolver.transport(b, corrupted, latents)
+    clean = deconvolver.transport(b, corrupted, latents, s=s)
     return clean
 
 batches = num_to_groups(fid_scorer.n_samples, fid_scorer.batch_size)
