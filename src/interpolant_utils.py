@@ -52,7 +52,7 @@ class MLPVelocityField(torch.nn.Module):
 
 class DeconvolvingInterpolant(torch.nn.Module):
 
-    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1, diffusion_coeff=0.0, gamma_scale=0.0, sampler='euler', randomize_time=False):
+    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1, diffusion_coeff=0.0, gamma_scale=0.0, sampler='euler', randomize_time=False, n_transports=1):
         super().__init__()
         self.push_fwd = push_fwd
         self.n_steps = n_steps
@@ -65,6 +65,7 @@ class DeconvolvingInterpolant(torch.nn.Module):
         self.diffusion_coeff = diffusion_coeff
         self.gamma_scale = gamma_scale
         self.sampler = sampler
+        self.n_transports = n_transports
         if sampler == 'heun':
             print("Using heun sampler")
         if self.diffusion_coeff == 'gamma':
@@ -76,18 +77,26 @@ class DeconvolvingInterpolant(torch.nn.Module):
 
             
     def loss_fn(self, b, x, latent=None, x0=None, b_fixed=None, s=None, s_fixed=None):
-        batch_size = x.shape[0]
         loss = 0.
         s_loss = 0.
 
         if x0 is None: # x0 is the cleandata, use if provided
             b_transport = b_fixed if b_fixed is not None else b
             s_transport = s_fixed if s_fixed is not None else s
-            if self.sampler == 'euler':
-                x0 = self.transport(b_transport, x, latent=latent, s=s_transport)
-            elif self.sampler == 'heun':
-                x0 = self.transport_heun(b_transport, x, latent=latent, s=s_transport)
+            # if self.sampler == 'euler':
+            #     x0 = self.transport(b_transport, x, latent=latent, s=s_transport)
+            # elif self.sampler == 'heun':
+            #     x0 = self.transport_heun(b_transport, x, latent=latent, s=s_transport)
+            transport = self.transport if self.sampler == 'euler' else self.transport_heun
+            x0 = []
+            for i in range(self.n_transports):
+                x0.append(transport(b_transport, x, latent=latent, s=s_transport))
+            x0 = torch.concat(x0, axis=0)
+            x = torch.concat([x for _ in range(self.n_transports)], axis=0)
+            if latent is not None:
+                latent = torch.concat([latent for _ in range(self.n_transports)], axis=0)
 
+        batch_size = x.shape[0]            
         for i in range(self.resamples):
             x1, latent1 = self.push_fwd(x0, return_latents=True)
             latent1 = latent1 if self.use_latents else None
@@ -212,7 +221,7 @@ class DeconvolvingInterpolant(torch.nn.Module):
 
 class DeconvolvingInterpolantCombined(torch.nn.Module):
 
-    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1,  gamma_scale=0.1, sampler='euler', randomize_time=False):
+    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1,  gamma_scale=0.1, sampler='euler', randomize_time=False, n_transports=1):
         super().__init__()
         print("Learning combined drift from drift + score network")
         self.push_fwd = push_fwd
@@ -225,6 +234,7 @@ class DeconvolvingInterpolantCombined(torch.nn.Module):
         self.gamma_scale = gamma_scale
         self.sampler = sampler
         self.randomize_time = randomize_time
+        self.n_transports = n_transports
         if self.randomize_time:
             print("Randomize time grid")
         if self.sampler == 'heun':
@@ -233,14 +243,21 @@ class DeconvolvingInterpolantCombined(torch.nn.Module):
             print("Using latents for deonvolving")
         
     def loss_fn(self, b, x, latent=None, x0=None, b_fixed=None, s=None, s_fixed=None):
-        batch_size = x.shape[0]
         loss = 0.
         s_loss = 0.
 
         if x0 is None: # x0 is the cleandata, use if provided
             b_transport = b_fixed if b_fixed is not None else b
-            x0 = self.transport(b_transport, x, latent=latent)
-
+            #x0 = self.transport(b_transport, x, latent=latent)
+            x0 = []
+            for i in range(self.n_transports):
+                x0.append(self.transport(b_transport, x, latent=latent))
+            x0 = torch.concat(x0, axis=0)
+            x = torch.concat([x for _ in range(self.n_transports)], axis=0)
+            if latent is not None:
+                latent = torch.concat([latent for _ in range(self.n_transports)], axis=0)
+                
+        batch_size = x.shape[0]            
         for i in range(self.resamples):
             x1, latent1 = self.push_fwd(x0, return_latents=True)
             latent1 = latent1 if self.use_latents else None
@@ -291,7 +308,8 @@ class DeconvolvingInterpolantCombined(torch.nn.Module):
                 if self.sampler == 'euler':
                     v = b(Xt_prev, ti, latent)
                     Xt_prev -= v * delta_t
-                    Xt_prev += math.sqrt(2. * diffusion_coeff) * sqrt_delta_t* z  # diffusion term                            
+                    Xt_prev += math.sqrt(2. * diffusion_coeff) * sqrt_delta_t* z  # diffusion term
+                    
                 elif self.sampler == 'heun':
                     Xt_prev += math.sqrt(2. * diffusion_coeff) * sqrt_delta_t* z
                     v = b(Xt_prev, ti, latent)
@@ -307,6 +325,105 @@ class DeconvolvingInterpolantCombined(torch.nn.Module):
         return Xt_final
 
 
+
+
+class DeconvolvingInterpolantAWGN(torch.nn.Module):
+
+    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1, diffusion_coeff=0.0, gamma_scale=0.0, sampler='euler', noise_scale=0.1):
+        super().__init__()
+        self.push_fwd = push_fwd
+        self.n_steps = n_steps
+        self.delta_t = 1 / self.n_steps
+        self.sqrt_delta_t = self.delta_t**0.5
+        self.randomize_time = randomize_time
+        self.use_latents = use_latents
+        self.alpha = alpha #not used
+        self.resamples = resamples
+        self.diffusion_coeff = diffusion_coeff 
+        self.gamma_scale = gamma_scale #not used
+        self.sampler = sampler
+        self.n_transports = n_transports
+        if sampler == 'heun':
+            raise NotImplementedError
+        if self.diffusion_coeff == 'gamma':
+            print("Diffusion coeff set to gamma scale at all times")
+        elif self.diffusion_coeff > 0.25 * self.gamma_scale:
+            print("WARNING: diffusion_coeff is larger than 0.25 * gamma_scale, maximum noise during training.")
+            
+    def loss_fn(self, b, x, latent=None, x0=None, b_fixed=None, s=None, s_fixed=None):
+        loss = 0.
+        s_loss = 0.
+
+        if x0 is None: # x0 is the cleandata, use if provided
+            b_transport = b_fixed if b_fixed is not None else b
+            s_transport = s_fixed if s_fixed is not None else s
+            transport = self.transport if self.sampler == 'euler' else self.transport_heun
+            x0 = transport(b_transport, x, latent=latent, s=s_transport)
+            if latent is not None:
+                raise NotImplementedError
+
+        batch_size = x.shape[0]
+        
+        for i in range(self.resamples):
+            x1, latent1 = self.push_fwd(x0, return_latents=True) #don't really use it.
+
+            # # pick data with probabability 1-alpha --- don't implement for simplicity
+            # raw_mask = torch.bernoulli(torch.full((batch_size,), self.alpha)).to(x.device)
+            # mask = raw_mask.view(batch_size, *([1] * (x.ndim - 1)))
+            # x1 = x1 * mask + x * (1 - mask)
+
+            # proceed as before
+            t = torch.rand(x.shape[0]).to(x.device)
+            new_shape = [-1] + [1] * (x.ndim - 1)
+            t = t.reshape(new_shape)
+            z = torch.randn(x0.shape).to(x.device)
+            It = x0 + t * self.noise_scale*z #basically interpolant is 1*x0 + 0*x1 + t*z*noise_scale 
+            v_true =  self.noise_scale*z
+            if s is not None:
+                st = s(It, torch.squeeze(t), latent1)
+                s_loss += torch.mean((st - z)**2)
+            vt   = b(It, torch.squeeze(t), latent1)
+            loss += torch.mean((vt - v_true)**2)
+
+        if s is not None:
+            return loss / self.resamples, s_loss / self.resamples 
+        else:
+            return loss / self.resamples, None  # s_loss is None
+
+    def transport(self, b, x, latent=None, s=None, return_trajectory=False, return_velocity=False):
+        traj = [x]
+        vel_all = []
+        with torch.no_grad():
+            Xt_prev = x*1.
+            for i in range(1, self.n_steps+1):
+                ti_scalar = 1 - (i-1) * self.delta_t
+                ti = (torch.ones(x.shape[0]) - (i-1) *self.delta_t).to(x.device)
+                v = b(Xt_prev, ti, latent)
+                if return_velocity:
+                    vel_all.append(v)
+                Xt_prev -= v * self.delta_t
+                if s is not None:
+                    if (type(self.diffusion_coeff) == float) or (type(self.diffusion_coeff) == int):
+                        raise NotImplementedError
+                        # Xt_prev -= s(Xt_prev, ti, latent) / (self.gamma_scale * (ti_scalar) * (1-ti_scalar) + 1e-3) * self.diffusion_coeff * self.delta_t # score term
+                        # Xt_prev += math.sqrt(2. * self.diffusion_coeff) * self.sqrt_delta_t*torch.randn(x.shape).to(x.device) # diffusion term
+                    elif self.diffusion_coeff == 'gamma':
+                        diffusion_coeff = self.noise_scale * (ti_scalar) #change the schedule
+                        Xt_prev -= s(Xt_prev, ti, latent) *  self.delta_t # score term
+                        Xt_prev += math.sqrt(2. * diffusion_coeff) * self.sqrt_delta_t*torch.randn(x.shape).to(x.device) # diffusion term
+                if return_trajectory:
+                    traj.append(Xt_prev)
+            Xt_final = Xt_prev
+
+        base_state = traj if return_trajectory else Xt_final
+        if return_velocity:
+            return base_state, vel_all
+        else:
+            return base_state
+
+
+
+    
 
 class DeconvolvingInterpolantFollmer(torch.nn.Module):
 
