@@ -148,6 +148,10 @@ class Conv2d(torch.nn.Module):
 class GroupNorm(torch.nn.Module):
     def __init__(self, num_channels, num_groups=32, min_channels_per_group=4, eps=1e-5):
         super().__init__()
+        if (num_channels % num_groups) == 0:
+            pass
+        elif ((2 * num_channels) % num_groups) == 0:
+            num_groups //= 2
         self.num_groups = min(num_groups, num_channels // min_channels_per_group)
         self.eps = eps
         self.weight = torch.nn.Parameter(torch.ones(num_channels))

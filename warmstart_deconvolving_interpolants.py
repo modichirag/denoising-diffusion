@@ -49,6 +49,7 @@ parser.add_argument("--load_model_path", type=str, default='', help="load model 
 parser.add_argument("--sampler", type=str, default='euler', help="load model from path")
 parser.add_argument("--combinedsde", action='store_true', help="learn combined drift for sde model")
 parser.add_argument("--randomize_t", action='store_true', help="randomize time stepping")
+parser.add_argument("--save_transport", action='store_true', help="save transport maps on updating")
 
 args = parser.parse_args()
 print(args)
@@ -69,7 +70,7 @@ clean_image_dataset = dataset if args.dataset == 'celebA' else ImagesOnly(datase
 
 model_channels = args.channels 
 train_num_steps = args.train_steps
-save_and_sample_every = min(args.save_every, int(train_num_steps//50))
+save_and_sample_every = min(args.save_every, int(train_num_steps//10))
 batch_size = args.batch_size
 lr = args.learning_rate 
 gated = args.gated
@@ -99,7 +100,7 @@ if args.randomize_t: folder = f"{folder}-randt"
 if args.combinedsde: folder = f"{folder}-combined"
 if args.prefix != "": folder = f"{args.prefix}-{folder}"
 if args.suffix != "": folder = f"{folder}-{args.suffix}"
-results_folder = f"{BASEPATH}/{folder}-wstart-noopt/"
+results_folder = f"{BASEPATH}/{folder}-wstart/"
 os.makedirs(results_folder, exist_ok=True)
 print(f"Results will be saved in folder: {results_folder}")
 
@@ -182,7 +183,8 @@ trainer = Trainer(model=b,
                   update_transport_every=args.transport_steps,
                   s_model=s_model,
                   clean_data_steps=args.cleansteps,
-                  return_opt_state=True
+                  return_opt_state=True,
+                  save_transport=args.save_transport
         )
 _, opt_state_dict = trainer.train()
 
@@ -201,6 +203,7 @@ trainer = Trainer(model=b,
                   update_transport_every=args.transport_steps,
                   s_model=s_model,
                   clean_data_steps=-1,
+                  save_transport=args.save_transport
                   #opt_state=opt_state_dict
         )
 

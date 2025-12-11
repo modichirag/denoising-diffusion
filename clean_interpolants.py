@@ -9,7 +9,7 @@ import numpy as np
 sys.path.append('./src/')
 from networks import ConditionalDhariwalUNet
 from custom_datasets import dataset_dict, ImagesOnly, cifar10_inverse_transforms
-from interpolant_utils import DeconvolvingInterpolant, VelocityField
+from interpolant_utils import DeconvolvingInterpolant, DeconvolvingInterpolantCombined
 import forward_maps as fwd_maps
 from utils import remove_orig_mod_prefix, remove_all_prefix
 from tqdm.auto import tqdm
@@ -101,42 +101,71 @@ else:
                                           sampler=args.sampler, randomize_time=args.randomize_t).to(device)
 
 
-# setup the model
-b = ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim, model_channels=args.channels, gated=gated, \
-                            max_pos_embedding=args.max_pos_embedding, zero_emb_channels_bwd=True).to(device)
-ema_b = EMA(b)
-data = torch.load(f'{folder}/model-{args.model}.pt', weights_only=True)
-try:
-    b.load_state_dict(data['model'])
-    ema_b.load_state_dict(data['ema'])
-except Exception as e :
-    print("Saved compiled model. Trying to load without compilation")
-    cleaned_ckpt = remove_orig_mod_prefix(data['model'])
-    b.load_state_dict(cleaned_ckpt)
-    cleaned_ckpt = remove_orig_mod_prefix(data['ema'])
-    ema_b.load_state_dict(cleaned_ckpt)    
-b = ema_b.ema_model.to(device)
+# Load models
+for emb  in [True, False]:
+    try:
+        b = ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim, model_channels=args.channels, gated=gated, \
+                                    max_pos_embedding=args.max_pos_embedding, zero_emb_channels_bwd=emb).to(device)
+        ema_b = EMA(b)
+        data = torch.load(f'{folder}/model-{args.model}.pt', weights_only=True)
+        cleaned_ckpt = remove_orig_mod_prefix(data['model'])
+        b.load_state_dict(cleaned_ckpt)
+        cleaned_ckpt = remove_orig_mod_prefix(data['ema'])
+        ema_b.load_state_dict(cleaned_ckpt)    
+        b = ema_b.ema_model
 
-if ('s_ema' in data.keys()) and args.smodel:
-    print("SDE training")
-    s_model =  ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim,
-                            model_channels=args.channels, gated=gated, \
-                            max_pos_embedding=args.max_pos_embedding).to(device)
-    ema = EMA(s_model)
-    ema.load_state_dict(remove_all_prefix(data['s_ema']))
-    s_model.load_state_dict(ema.ema_model.state_dict())
+        s = None
+        if 's_ema' in data:
+            s = ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim, model_channels=channels, max_pos_embedding=args.max_pos_embedding, zero_emb_channels_bwd=emb).to(device)
+            emas = EMA(s)
+            emas.load_state_dict(cleaned_ckpt['s_ema'])
+            s = emas.ema_model
+            assert args.gamma_scale != 0.
+            diffusion_coeff = 'gamma' if args.diffusion_coeff == 0.0 else  args.diffusion_coeff            
+        continue
+    
+    except Exception as e:
+        print(e)
 
-    # set other params
-    if args.gamma_scale == 0. :
-        print("WARNING: SCORE NETWORK give with gamma=0. Setting gamma to 1.")
-        args.gamma_scale = 1.
-    if args.diffusion_coeff == 0. :
-        # print("WARNING: SCORE NETWORK give with diffusion coeff=0. Setting it to value of gamma*0.25 i.e. ". args.gamma_scale * 0.25)
-        # args.diffusion_coeff = args.gamma_scale * 0.25
-        print("WARNING: SCORE NETWORK give with diffusion coeff=0. Setting it to value gamma at all times")
-        args.diffusion_coeff = "gamma" 
-else:
-    s_model = None
+if s is None:
+    print('score network loaded')
+
+# # setup the model
+# b = ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim, model_channels=args.channels, gated=gated, \
+#                             max_pos_embedding=args.max_pos_embedding, zero_emb_channels_bwd=True).to(device)
+# ema_b = EMA(b)
+# data = torch.load(f'{folder}/model-{args.model}.pt', weights_only=True)
+# try:
+#     b.load_state_dict(data['model'])
+#     ema_b.load_state_dict(data['ema'])
+# except Exception as e :
+#     print("Saved compiled model. Trying to load without compilation")
+#     cleaned_ckpt = remove_orig_mod_prefix(data['model'])
+#     b.load_state_dict(cleaned_ckpt)
+#     cleaned_ckpt = remove_orig_mod_prefix(data['ema'])
+#     ema_b.load_state_dict(cleaned_ckpt)    
+# b = ema_b.ema_model.to(device)
+
+# if ('s_ema' in data.keys()) and args.smodel:
+#     print("SDE training")
+#     s_model =  ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim,
+#                             model_channels=args.channels, gated=gated, \
+#                             max_pos_embedding=args.max_pos_embedding).to(device)
+#     ema = EMA(s_model)
+#     ema.load_state_dict(remove_all_prefix(data['s_ema']))
+#     s_model.load_state_dict(ema.ema_model.state_dict())
+
+#     # set other params
+#     if args.gamma_scale == 0. :
+#         print("WARNING: SCORE NETWORK give with gamma=0. Setting gamma to 1.")
+#         args.gamma_scale = 1.
+#     if args.diffusion_coeff == 0. :
+#         # print("WARNING: SCORE NETWORK give with diffusion coeff=0. Setting it to value of gamma*0.25 i.e. ". args.gamma_scale * 0.25)
+#         # args.diffusion_coeff = args.gamma_scale * 0.25
+#         print("WARNING: SCORE NETWORK give with diffusion coeff=0. Setting it to value gamma at all times")
+#         args.diffusion_coeff = "gamma" 
+# else:
+#     s_model = None
 
 
 

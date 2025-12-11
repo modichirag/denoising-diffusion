@@ -39,6 +39,7 @@ parser.add_argument("--gamma_scale", type=float, default=0., help="noise added t
 parser.add_argument("--diffusion_coeff", type=float, default=0., help="diffusion coeff for sde")
 parser.add_argument("--transport_steps", type=int, default=1, help="update transport map every n steps")
 parser.add_argument("--smodel", action='store_true', help="use sde model")
+parser.add_argument("--cleansteps", type=int, default=-1, help="update transport map every n steps")
 parser.add_argument("--load_model_path", type=str, default='', help="load model from path")
 parser.add_argument("--sampler", type=str, default='euler', help="load model from path")
 parser.add_argument("--combinedsde", action='store_true', help="learn combined drift for sde model")
@@ -72,9 +73,15 @@ except Exception as e:
     sys.exit()
 cname = "-".join([f"{i:0.2f}" for i in corruption_levels])
 folder = f"{args.dataset}-{corruption}-{cname}"
+if args.cleansteps != -1: folder = f"{folder}-cds{args.cleansteps}"
 if args.transport_steps != 1: folder = f"{folder}-tr{args.transport_steps}"
 if args.smodel: folder = f"{folder}-sde"
-if args.gamma_scale != 0: folder = f"{folder}-g{args.gamma_scale:0.2f}"
+#if args.gamma_scale != 0: folder = f"{folder}-g{args.gamma_scale:0.2f}"
+if args.gamma_scale != 0:
+    if args.gamma_scale  < 0.01:
+        folder = f"{folder}-g{args.gamma_scale:0.3f}"
+    else:
+        folder = f"{folder}-g{args.gamma_scale:0.2f}"
 #if args.diffusion_coeff != 0: folder = f"{folder}-dc{args.diffusion_coeff:0.3f}"
 if args.smodel: folder = f"{folder}-dc{args.diffusion_coeff:0.3f}"
 if args.sampler != 'euler': folder = f"{folder}-{args.sampler}"
@@ -123,7 +130,7 @@ for emb  in [True, False]:
     except Exception as e:
         print(e)
 
-if s is None:
+if s is not None:
     print('score network loaded')
 
     
