@@ -70,7 +70,8 @@ class Trainer:
             callback_kwargs = {},
             s_model = None,
             opt_state=None,
-            return_opt_state=False
+            return_opt_state=False,
+            save_transport=False
     ):
         super().__init__()
 
@@ -102,6 +103,7 @@ class Trainer:
         self.max_grad_norm = max_grad_norm
         self.mixed_precision_type = mixed_precision_type
         self.update_transport_every = update_transport_every
+        self.save_transport = save_transport
         self.clean_data_steps = clean_data_steps
         self.callback_fn = callback_fn
         self.validation_data = validation_data
@@ -130,15 +132,7 @@ class Trainer:
             opt = Adam if weight_decay == 0 else AdamW
             self.opt = opt(model.parameters(), lr = train_lr, betas = adam_betas, weight_decay=weight_decay)
             if s_model is not None:
-                self.s_opt = Adam(s_model.parameters(), lr = train_lr, betas = adam_betas, weight_decay=weight_decay)            
-            # if weight_decay == 0:
-            #     self.opt = Adam(model.parameters(), lr = train_lr, betas = adam_betas)
-            #     if s_model is not None:
-            #         self.s_opt = Adam(s_model.parameters(), lr = train_lr, betas = adam_betas)
-            # else:
-            #     self.opt = AdamW(model.parameters(), lr = train_lr, betas = adam_betas, weight_decay=weight_decay)
-            #     if s_model is not None:
-            #         self.s_opt = AdamW(s_model.parameters(), lr = train_lr, betas = adam_betas, weight_decay=weight_decay)
+                self.s_opt = opt(s_model.parameters(), lr = train_lr, betas = adam_betas, weight_decay=weight_decay)            
         self.return_opt_state = return_opt_state
         if opt_state is not None:
             self.opt.load_state_dict(opt_state[0])
@@ -270,6 +264,7 @@ class Trainer:
                 transport_score = copy.deepcopy(self.s_model)
                 transport_score.eval()
 
+
         if not bool(os.getenv('SLURM_JOB_ID')): # interactive environment like Jupyter
             miniters = 1
             mininterval = 0.1
@@ -358,7 +353,7 @@ class Trainer:
                     self.step += 1
 
                     # Update transport map if needed
-                    if (self.step % self.update_transport_every == 0) & (transport_map is not None):
+                    if ((self.step % self.update_transport_every == 0) & (transport_map is not None)) or ((self.step == self.clean_data_steps) & (transport_map is not None)):
                         if isinstance(self.model, DDP) :
                             transport_map.load_state_dict(self.model.module.state_dict())
                         else:
@@ -367,17 +362,25 @@ class Trainer:
                         if transport_score is not None:
                             transport_score.load_state_dict(self.s_model.state_dict())
                             transport_score.eval()
+                        if self.save_transport:
+                            data = {'step': self.step,
+                                    'model': transport_map.state_dict()}
+                            if self.s_model is not None:
+                                data['s_model'] = transport_score.state_dict()                     
+                            torch.save(data, str(self.results_folder / f'transport-{self.step//self.update_transport_every}.pt'))
+
 
                     if self.master_process:
                         self.ema.update()
                         if self.s_model is not None:
                             self.s_ema.update()
 
-                        if self.step % 5000 == 0:
-                            self.save(self.step)
+                        # if self.step % 5000 == 0:
+                        #     self.save(self.step)
 
                         if divisible_by(self.step, self.save_and_sample_every):
                             np.save(f"{self.results_folder}/losses", losses)
+                            self.save(self.step)
                             self.save("latest")
                             if losses[-1][0] < min_loss:
                                 min_loss = losses[-1][0]

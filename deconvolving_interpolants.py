@@ -35,7 +35,7 @@ parser.add_argument("--ode_steps", type=int, default=80, help="ode steps")
 parser.add_argument("--alpha", type=float, default=1., help="probability of using new data")
 parser.add_argument("--resamples", type=int, default=1, help="number of resamplings")
 parser.add_argument("--multiview", action='store_true', help="change corruption every epoch if provided, else not")
-parser.add_argument("--save_every", type=int, default=500, help="save every steps")
+parser.add_argument("--save_every", type=int, default=5000, help="save every steps")
 parser.add_argument("--max_pos_embedding", type=int, default=2, help="number of resamplings")
 parser.add_argument("--gamma_scale", type=float, default=0., help="noise added to interpolant")
 parser.add_argument("--diffusion_coeff", type=float, default=0., help="diffusion coeff for sde")
@@ -46,6 +46,8 @@ parser.add_argument("--load_model_path", type=str, default='', help="load model 
 parser.add_argument("--sampler", type=str, default='euler', help="load model from path")
 parser.add_argument("--combinedsde", action='store_true', help="learn combined drift for sde model")
 parser.add_argument("--randomize_t", action='store_true', help="randomize time stepping")
+parser.add_argument("--save_transport", action='store_true', help="save transport maps on updating")
+parser.add_argument("--n_transports", type=int, default=1, help="update transport map every n steps")
 
 args = parser.parse_args()
 print(args)
@@ -64,7 +66,7 @@ else:
     image_dataset = ImagesOnly(dataset)
 model_channels = args.channels #192
 train_num_steps = args.train_steps
-save_and_sample_every = min(args.save_every, int(train_num_steps//50))
+save_and_sample_every = min(args.save_every, int(train_num_steps//10))
 batch_size = args.batch_size
 lr = args.learning_rate 
 gated = args.gated
@@ -86,7 +88,11 @@ folder = f"{args.dataset}-{corruption}-{cname}"
 if args.cleansteps != -1: folder = f"{folder}-cds{args.cleansteps}"
 if args.transport_steps != 1: folder = f"{folder}-tr{args.transport_steps}"
 if args.smodel: folder = f"{folder}-sde"
-if args.gamma_scale != 0: folder = f"{folder}-g{args.gamma_scale:0.2f}"
+if args.gamma_scale != 0:
+    if args.gamma_scale  < 0.01:
+        folder = f"{folder}-g{args.gamma_scale:0.3f}"
+    else:
+        folder = f"{folder}-g{args.gamma_scale:0.2f}"
 #if args.diffusion_coeff != 0: folder = f"{folder}-dc{args.diffusion_coeff:0.3f}"
 if args.smodel: folder = f"{folder}-dc{args.diffusion_coeff:0.3f}"
 if args.sampler != 'euler': folder = f"{folder}-{args.sampler}"
@@ -147,20 +153,20 @@ if args.combinedsde:
     deconvolver = DeconvolvingInterpolantCombined(fwd_func, use_latents=use_latents, \
                                       alpha=args.alpha, resamples=args.resamples, n_steps=args.ode_steps, \
                                                   gamma_scale=args.gamma_scale, sampler=args.sampler,
-                                                  randomize_time=args.randomize_t).to(device)
+                                                  randomize_time=args.randomize_t, n_transports=args.n_transports).to(device)
 else:
     deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, \
                                       alpha=args.alpha, resamples=args.resamples, n_steps=args.ode_steps, \
                                       gamma_scale=args.gamma_scale, diffusion_coeff=args.diffusion_coeff,
-                                          sampler=args.sampler, randomize_time=args.randomize_t).to(device)
+                                          sampler=args.sampler, randomize_time=args.randomize_t, n_transports=args.n_transports).to(device)
 corrupt_dataset = CorruptedDataset(image_dataset, deconvolver.push_fwd, \
                                    tied_rng=not(args.multiview), base_seed=args.dataset_seed)
 
 trainer = Trainer(model=b, 
                   deconvolver=deconvolver, 
                   dataset = corrupt_dataset,
-                  train_batch_size = batch_size,
-                  gradient_accumulate_every = int(batch_size // args.mini_batch_size),
+                  train_batch_size = batch_size // args.n_transports,
+                  gradient_accumulate_every = int(batch_size * args.n_transports// args.mini_batch_size),
                   train_lr = lr,
                   lr_scheduler = lr_scheduler,
                   train_num_steps = train_num_steps,
@@ -169,7 +175,8 @@ trainer = Trainer(model=b,
                   warmup_fraction=0.05,
                   update_transport_every=args.transport_steps,
                   s_model=s_model,
-                  clean_data_steps=args.cleansteps
+                  clean_data_steps=args.cleansteps,
+                  save_transport=args.save_transport
         )
 
 trainer.train()

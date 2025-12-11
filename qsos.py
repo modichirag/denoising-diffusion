@@ -130,9 +130,8 @@ b = KarrasUnet1D(seq_len=D//downsample_factor, channels=downsample_factor, \
                   dim=16, num_blocks_per_stage=2, num_downsamples=3, attn_res=(32)).to(device)
 if args.smodel:
     print("SDE training")
-    s_model =  ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim,
-                            model_channels=model_channels, gated=gated, \
-                            max_pos_embedding=args.max_pos_embedding).to(device)
+    s_model = KarrasUnet1D(seq_len=D//downsample_factor, channels=downsample_factor, \
+                  dim=16, num_blocks_per_stage=2, num_downsamples=3, attn_res=(32)).to(device)
     if args.gamma_scale == 0. :
         print("WARNING: SCORE NETWORK give with gamma=0. Setting gamma to 1.")
         args.gamma_scale = 1.

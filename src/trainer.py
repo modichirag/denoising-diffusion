@@ -51,7 +51,9 @@ class Trainer:
             max_grad_norm = 1.,
             num_fid_samples = 10_000,
             save_best_and_latest_only = False,
-            num_workers = None
+            num_workers = None,
+            opt_state=None,
+            return_opt_state=False
     ):
         super().__init__()
 
@@ -97,6 +99,9 @@ class Trainer:
 
         # optimizer
         self.opt = Adam(model.parameters(), lr = train_lr, betas = adam_betas)
+        self.return_opt_state = return_opt_state
+        if opt_state is not None:
+            self.opt.load_state_dict(opt_state)
         if lr_scheduler is not None:
             num_warmup_steps = int(warmup_fraction * train_num_steps) 
             self.lr_scheduler = get_cosine_schedule_with_warmup(
@@ -262,4 +267,6 @@ class Trainer:
                 pbar.update(1)
 
         accelerator.print('training complete')
+        if self.return_opt_state:
+            return losses, fids, self.opt.state_dict()
         return losses, fids
