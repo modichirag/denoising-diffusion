@@ -329,20 +329,19 @@ class DeconvolvingInterpolantCombined(torch.nn.Module):
 
 class DeconvolvingInterpolantAWGN(torch.nn.Module):
 
-    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1, diffusion_coeff=0.0, gamma_scale=0.0, sampler='euler', noise_scale=0.1):
+    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1, diffusion_coeff='gamma', gamma_scale=0.0, sampler='euler', noise_scale=0.1):
         super().__init__()
         self.push_fwd = push_fwd
         self.n_steps = n_steps
         self.delta_t = 1 / self.n_steps
         self.sqrt_delta_t = self.delta_t**0.5
-        self.randomize_time = randomize_time
         self.use_latents = use_latents
         self.alpha = alpha #not used
         self.resamples = resamples
         self.diffusion_coeff = diffusion_coeff 
         self.gamma_scale = gamma_scale #not used
         self.sampler = sampler
-        self.n_transports = n_transports
+        self.noise_scale = noise_scale
         if sampler == 'heun':
             raise NotImplementedError
         if self.diffusion_coeff == 'gamma':
@@ -366,7 +365,7 @@ class DeconvolvingInterpolantAWGN(torch.nn.Module):
         
         for i in range(self.resamples):
             x1, latent1 = self.push_fwd(x0, return_latents=True) #don't really use it.
-
+            latent1 = None
             # # pick data with probabability 1-alpha --- don't implement for simplicity
             # raw_mask = torch.bernoulli(torch.full((batch_size,), self.alpha)).to(x.device)
             # mask = raw_mask.view(batch_size, *([1] * (x.ndim - 1)))
