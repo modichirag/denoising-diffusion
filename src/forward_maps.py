@@ -23,7 +23,7 @@ def add_gaussian_noise(epsilon: float) -> callable:
 def random_mask_image(mask_ratio: float, epsilon: float, noise_mask=0.) -> callable:
     """Returns a function that randomly masks out a fraction of pixels in an image."""
 
-    def fwd(image: torch.Tensor, return_latents=False, generator=None, latents=None):
+    def fwd(image: torch.Tensor, return_latents=False, generator=None, latents=None, cond_y=False):
         """
         Args:
             image: a 3-D tensor of shape (C, H, W) or
@@ -64,7 +64,9 @@ def random_mask_image(mask_ratio: float, epsilon: float, noise_mask=0.) -> calla
             # x_n[mask.expand(-1, C, -1, -1) == 0] = 0
             x_n += noise
 
-        if return_latents:
+        if cond_y:
+            return x_n, x_n
+        elif return_latents:
             return x_n, mask
         else:
             return x_n
@@ -77,11 +79,13 @@ def gaussian_blur(sigma: float, epsilon: float) -> callable:
     kernel_size = int(2 * math.ceil(3*sigma) + 1)
     gaussian_blur = transforms.GaussianBlur(kernel_size=kernel_size, sigma=sigma)
 
-    def fwd(x, return_latents=False, generator=None, latents=None):
+    def fwd(x, return_latents=False, generator=None, latents=None, cond_y=False):
         x_b = gaussian_blur(x)
         z = torch.randn(x_b.shape, generator=generator).to(x.device)
         x_b += epsilon * z
-        if return_latents:
+        if cond_y:
+            return x_b, x_b
+        elif return_latents:
             return x_b, z
         else:
             return x_b
@@ -94,12 +98,14 @@ def gaussian_blur_pnoise(sigma: float, rate: float) -> callable:
     kernel_size = int(2 * math.ceil(3*sigma) + 1)
     gaussian_blur = transforms.GaussianBlur(kernel_size=kernel_size, sigma=sigma)
 
-    def fwd(x, return_latents=False, generator=None, latents=None):
+    def fwd(x, return_latents=False, generator=None, latents=None, cond_y=False):
         x_b = gaussian_blur(x)
         rate_tensor = torch.ones(x_b.shape, device=x.device)*rate
         noise = torch.poisson(rate_tensor, generator=generator)
         x_b += noise
-        if return_latents:
+        if cond_y:
+            return x_b, x_b
+        elif return_latents:
             return x_b, noise
         else:
             return x_b
@@ -188,7 +194,7 @@ def motion_blur(kernel_size, angle, epsilon):
     k = F.grid_sample(k, grid, align_corners=False)
     k = k / k.sum()
 
-    def fwd(img, return_latents=False, generator=None):
+    def fwd(img, return_latents=False, generator=None, cond_y=False):
         # 2) Convolve
         # ensure img is batched
         was_3d = (img.dim() == 3)
@@ -204,7 +210,10 @@ def motion_blur(kernel_size, angle, epsilon):
         out += z * epsilon
         if was_3d:
             out = out.squeeze(0)
-        if return_latents:
+            
+        if cond_y:
+            return out, out
+        elif return_latents:
             return out, k
         else:
             return out
@@ -225,7 +234,7 @@ def random_motion(kernel_size, epsilon):
     k = k.unsqueeze(0).unsqueeze(0)  # 1×1×k×k
     pad = kernel_size // 2
 
-    def fwd(img, return_latents=False, generator=None, latents=None):
+    def fwd(img, return_latents=False, generator=None, latents=None, cond_y=False):
         # Ensure img is batched
         was_3d = (img.dim() == 3)
         if was_3d:
@@ -272,7 +281,9 @@ def random_motion(kernel_size, epsilon):
         out += z * epsilon
         out = out.squeeze(0) if was_3d else out
 
-        if return_latents:
+        if cond_y:
+            return out, out
+        elif return_latents:
             latent = (angles / torch.pi).unsqueeze(1)
             latent = latent.squeeze(0) if was_3d else latent
             return out, latent
@@ -339,7 +350,7 @@ def random_motion2(kernel_size, epsilon):
 
         return out
 
-    def fwd(img, angles=None, return_latents=False, generator=None):
+    def fwd(img, angles=None, return_latents=False, generator=None, cond_y=False):
         was_3d = (img.dim() == 3)
         if was_3d:
             img = img.unsqueeze(0)  # Add batch dimension
@@ -358,7 +369,9 @@ def random_motion2(kernel_size, epsilon):
         out += z*epsilon
         out = out.squeeze(0) if was_3d else out
 
-        if return_latents:
+        if cond_y:
+            return out, out
+        elif return_latents:
             latent = torch.vmap(direction_map_projection, in_dims=(0, 0, None, None), out_dims=(0))  (cos, sin, H, W)
             latent = latent.unsqueeze(1)
             latent = latent.squeeze(0) if was_3d else latent
@@ -682,17 +695,17 @@ corruption_dict = {
     'projection_vec_ds': random_projection_vec_dataset,
 }
 
-def parse_latents(corruption, D, s=None):
+def parse_latents(corruption, D, s=None, cond_y=False):
     """Parse the corruption function and return the latent dimensions."""
     if 'mask' in corruption:
         use_latents = True
-        latent_dim = [1, D, D]
+        latent_dim = [1, D, D] if not cond_y else [3, D, D]
     elif corruption == 'random_motion':
         use_latents = True
-        latent_dim = [1]
+        latent_dim = [1] if not cond_y else [3, D, D]
     elif corruption == 'random_motion2':
         use_latents = True
-        latent_dim = [1, D, D]
+        latent_dim = [1, D, D] if not cond_y else [3, D, D]
     elif corruption == 'mri_pix1d':
         if s is None:
             raise ValueError("For 'mri_pix1d', 's' must be provided.")
@@ -705,11 +718,15 @@ def parse_latents(corruption, D, s=None):
         latent_dim = [int(s**2), D, D]
     elif corruption == 'jpeg_compress':
         use_latents = True
-        latent_dim = [1]
+        latent_dim = [1] if not cond_y else [3, D, D]
     elif corruption.startswith('projection'):
         use_latents = True
         latent_dim = [1] # artificial, to be corrected later
-    else:
-        use_latents = False
-        latent_dim = None
+    elif 'blur' in corruption:
+        if not cond_y:
+            use_latents = False
+            latent_dim = None
+        else:
+            use_latents = True
+            latent_dim = [3, D, D]
     return use_latents, latent_dim

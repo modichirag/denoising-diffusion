@@ -12,6 +12,7 @@ from interpolant_utils import DeconvolvingInterpolant,  DeconvolvingInterpolantC
 import forward_maps as fwd_maps
 from trainer_si import Trainer
 from utils import remove_all_prefix
+from functools import partial
 import argparse
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -48,6 +49,7 @@ parser.add_argument("--combinedsde", action='store_true', help="learn combined d
 parser.add_argument("--randomize_t", action='store_true', help="randomize time stepping")
 parser.add_argument("--save_transport", action='store_true', help="save transport maps on updating")
 parser.add_argument("--n_transports", type=int, default=1, help="update transport map every n steps")
+parser.add_argument("--cond_y", action='store_true', help="save transport maps on updating")
 
 args = parser.parse_args()
 print(args)
@@ -98,13 +100,14 @@ if args.smodel: folder = f"{folder}-dc{args.diffusion_coeff:0.3f}"
 if args.sampler != 'euler': folder = f"{folder}-{args.sampler}"
 if args.randomize_t: folder = f"{folder}-randt"
 if args.combinedsde: folder = f"{folder}-combined"
+if args.cond_y: folder = f"{folder}-condy"
 if args.prefix != "": folder = f"{args.prefix}-{folder}"
 if args.suffix != "": folder = f"{folder}-{args.suffix}"
 results_folder = f"{BASEPATH}/{folder}/"
 os.makedirs(results_folder, exist_ok=True)
 print(f"Results will be saved in folder: {results_folder}")
 
-use_latents, latent_dim = fwd_maps.parse_latents(corruption, D)
+use_latents, latent_dim = fwd_maps.parse_latents(corruption, D, cond_y=args.cond_y)
 if use_latents:
     print("Will use latents of dimension: ", latent_dim)
 args_dict = make_serializable(vars(args) if isinstance(args, argparse.Namespace) else args)
@@ -153,13 +156,14 @@ if args.combinedsde:
     deconvolver = DeconvolvingInterpolantCombined(fwd_func, use_latents=use_latents, \
                                       alpha=args.alpha, resamples=args.resamples, n_steps=args.ode_steps, \
                                                   gamma_scale=args.gamma_scale, sampler=args.sampler,
-                                                  randomize_time=args.randomize_t, n_transports=args.n_transports).to(device)
+                                                  randomize_time=args.randomize_t, n_transports=args.n_transports, cond_y=args.cond_y).to(device)
 else:
     deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, \
                                       alpha=args.alpha, resamples=args.resamples, n_steps=args.ode_steps, \
                                       gamma_scale=args.gamma_scale, diffusion_coeff=args.diffusion_coeff,
-                                          sampler=args.sampler, randomize_time=args.randomize_t, n_transports=args.n_transports).to(device)
-corrupt_dataset = CorruptedDataset(image_dataset, deconvolver.push_fwd, \
+                                          sampler=args.sampler, randomize_time=args.randomize_t, n_transports=args.n_transports, cond_y=args.cond_y).to(device)
+corrupt_fn = partial(deconvolver.push_fwd, cond_y=args.cond_y)
+corrupt_dataset = CorruptedDataset(image_dataset, corrupt_fn, \
                                    tied_rng=not(args.multiview), base_seed=args.dataset_seed)
 
 trainer = Trainer(model=b, 
