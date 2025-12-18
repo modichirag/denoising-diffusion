@@ -50,6 +50,7 @@ parser.add_argument("--randomize_t", action='store_true', help="randomize time s
 parser.add_argument("--save_transport", action='store_true', help="save transport maps on updating")
 parser.add_argument("--n_transports", type=int, default=1, help="update transport map every n steps")
 parser.add_argument("--cond_y", action='store_true', help="save transport maps on updating")
+parser.add_argument("--embed", action='store_true', help="save transport maps on updating")
 
 args = parser.parse_args()
 print(args)
@@ -101,15 +102,18 @@ if args.sampler != 'euler': folder = f"{folder}-{args.sampler}"
 if args.randomize_t: folder = f"{folder}-randt"
 if args.combinedsde: folder = f"{folder}-combined"
 if args.cond_y: folder = f"{folder}-condy"
+if args.embed: folder = f"{folder}-embed"
 if args.prefix != "": folder = f"{args.prefix}-{folder}"
 if args.suffix != "": folder = f"{folder}-{args.suffix}"
 results_folder = f"{BASEPATH}/{folder}/"
 os.makedirs(results_folder, exist_ok=True)
 print(f"Results will be saved in folder: {results_folder}")
 
-use_latents, latent_dim = fwd_maps.parse_latents(corruption, D, cond_y=args.cond_y)
+use_latents, latent_dim = fwd_maps.parse_latents(corruption, D, C=nc, cond_y=(args.cond_y or args.embed))
 if use_latents:
     print("Will use latents of dimension: ", latent_dim)
+else:
+    print("No latents")
 args_dict = make_serializable(vars(args) if isinstance(args, argparse.Namespace) else args)
 with open(f"{results_folder}/args.json", "w") as f:
     json.dump(args_dict, f, indent=4)
@@ -149,20 +153,21 @@ if args.load_model_path:
         ema.load_state_dict(remove_all_prefix(data['s_ema']))
         s_model.load_state_dict(ema.ema_model.state_dict())
 
-
-#b = torch.compile(b)
 print("Parameter count : ", count_parameters(b))
+#b = torch.compile(b)
+
+# Corruption
+corrupt_fn = partial(fwd_func, cond_y=args.cond_y, embed=args.embed)
 if args.combinedsde:
-    deconvolver = DeconvolvingInterpolantCombined(fwd_func, use_latents=use_latents, \
-                                      alpha=args.alpha, resamples=args.resamples, n_steps=args.ode_steps, \
-                                                  gamma_scale=args.gamma_scale, sampler=args.sampler,
-                                                  randomize_time=args.randomize_t, n_transports=args.n_transports, cond_y=args.cond_y).to(device)
+    deconvolver = DeconvolvingInterpolantCombined(corrupt_fn, use_latents=use_latents, \
+                                        alpha=args.alpha, resamples=args.resamples, n_steps=args.ode_steps, \
+                                        gamma_scale=args.gamma_scale, sampler=args.sampler,
+                                        randomize_time=args.randomize_t, n_transports=args.n_transports).to(device)
 else:
-    deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, \
-                                      alpha=args.alpha, resamples=args.resamples, n_steps=args.ode_steps, \
-                                      gamma_scale=args.gamma_scale, diffusion_coeff=args.diffusion_coeff,
-                                          sampler=args.sampler, randomize_time=args.randomize_t, n_transports=args.n_transports, cond_y=args.cond_y).to(device)
-corrupt_fn = partial(deconvolver.push_fwd, cond_y=args.cond_y)
+    deconvolver = DeconvolvingInterpolant(corrupt_fn, use_latents=use_latents, \
+                                    alpha=args.alpha, resamples=args.resamples, n_steps=args.ode_steps, \
+                                    gamma_scale=args.gamma_scale, diffusion_coeff=args.diffusion_coeff, sampler=args.sampler, \
+                                    randomize_time=args.randomize_t, n_transports=args.n_transports).to(device)
 corrupt_dataset = CorruptedDataset(image_dataset, corrupt_fn, \
                                    tied_rng=not(args.multiview), base_seed=args.dataset_seed)
 

@@ -1,6 +1,7 @@
 import torch
 import sys, os
 import json
+from functools import partial
 import argparse
 from torch.utils.data import DataLoader, Dataset
 from ema_pytorch import EMA
@@ -44,6 +45,8 @@ parser.add_argument("--load_model_path", type=str, default='', help="load model 
 parser.add_argument("--sampler", type=str, default='euler', help="load model from path")
 parser.add_argument("--combinedsde", action='store_true', help="learn combined drift for sde model")
 parser.add_argument("--randomize_t", action='store_true', help="randomize time stepping")
+parser.add_argument("--cond_y", action='store_true', help="save transport maps on updating")
+parser.add_argument("--embed", action='store_true', help="save transport maps on updating")
 
 args = parser.parse_args()
 print(args)
@@ -87,6 +90,8 @@ if args.smodel: folder = f"{folder}-dc{args.diffusion_coeff:0.3f}"
 if args.sampler != 'euler': folder = f"{folder}-{args.sampler}"
 if args.randomize_t: folder = f"{folder}-randt"
 if args.combinedsde: folder = f"{folder}-combined"
+if args.cond_y: folder = f"{folder}-condy"
+if args.embed: folder = f"{folder}-embed"
 if args.prefix != "": folder = f"{args.prefix}-{folder}"
 if args.suffix != "": folder = f"{folder}-{args.suffix}"
 if args.subfolder != "": folder = f"{folder}/{args.subfolder}/"
@@ -96,7 +101,7 @@ results_folder = f"{folder}/results"
 os.makedirs(results_folder, exist_ok=True)
 print(f"Models will be loaded from folder: {folder}")
 
-use_latents, latent_dim = fwd_maps.parse_latents(corruption, D)
+use_latents, latent_dim = fwd_maps.parse_latents(corruption, D, C=nc, cond_y=(args.cond_y or args.embed))
 if use_latents:
     print("Will use latents of dimension: ", latent_dim)
 n = int(args.n_samples/1e3)
@@ -119,7 +124,7 @@ for emb  in [True, False]:
 
         s = None
         if 's_ema' in data:
-            s = ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim, model_channels=channels, max_pos_embedding=args.max_pos_embedding, zero_emb_channels_bwd=emb).to(device)
+            s = ConditionalDhariwalUNet(D, nc, nc, latent_dim=latent_dim, model_channels=args.channels, max_pos_embedding=args.max_pos_embedding, zero_emb_channels_bwd=emb).to(device)
             emas = EMA(s)
             emas.load_state_dict(cleaned_ckpt['s_ema'])
             s = emas.ema_model
@@ -132,21 +137,18 @@ for emb  in [True, False]:
 
 if s is not None:
     print('score network loaded')
+#b = torch.compile(b)
 
     
 # Setup deconvolver
-# deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, n_steps=args.ode_steps, \
-#                                       gamma_scale=args.gamma_scale, diffusion_coeff=args.diffusion_coeff).to(device)
-#b = torch.compile(b)
+corrupt_fn = partial(fwd_func, cond_y=args.cond_y, embed=args.embed)
 if args.combinedsde:
-    deconvolver = DeconvolvingInterpolantCombined(fwd_func, use_latents=use_latents, \
-                                      n_steps=args.ode_steps, \
+    deconvolver = DeconvolvingInterpolantCombined(corrupt_fn , use_latents=use_latents, n_steps=args.ode_steps, \
                                                   gamma_scale=args.gamma_scale, sampler=args.sampler,
                                                   randomize_time=args.randomize_t).to(device)
 else:
-    deconvolver = DeconvolvingInterpolant(fwd_func, use_latents=use_latents, \
-                                      n_steps=args.ode_steps, \
-                                      gamma_scale=args.gamma_scale, diffusion_coeff=args.diffusion_coeff,
+    deconvolver = DeconvolvingInterpolant(corrupt_fn, use_latents=use_latents, n_steps=args.ode_steps, \
+                                          gamma_scale=args.gamma_scale, diffusion_coeff=args.diffusion_coeff,
                                           sampler=args.sampler, randomize_time=args.randomize_t).to(device)
 
 

@@ -23,7 +23,7 @@ def add_gaussian_noise(epsilon: float) -> callable:
 def random_mask_image(mask_ratio: float, epsilon: float, noise_mask=0.) -> callable:
     """Returns a function that randomly masks out a fraction of pixels in an image."""
 
-    def fwd(image: torch.Tensor, return_latents=False, generator=None, latents=None, cond_y=False):
+    def fwd(image: torch.Tensor, return_latents=False, generator=None, latents=None, cond_y=False, embed=False):
         """
         Args:
             image: a 3-D tensor of shape (C, H, W) or
@@ -64,6 +64,9 @@ def random_mask_image(mask_ratio: float, epsilon: float, noise_mask=0.) -> calla
             # x_n[mask.expand(-1, C, -1, -1) == 0] = 0
             x_n += noise
 
+        if embed:
+            z = torch.randn(image.shape).to(image.device)
+            return z, x_n
         if cond_y:
             return x_n, x_n
         elif return_latents:
@@ -79,10 +82,13 @@ def gaussian_blur(sigma: float, epsilon: float) -> callable:
     kernel_size = int(2 * math.ceil(3*sigma) + 1)
     gaussian_blur = transforms.GaussianBlur(kernel_size=kernel_size, sigma=sigma)
 
-    def fwd(x, return_latents=False, generator=None, latents=None, cond_y=False):
+    def fwd(x, return_latents=False, generator=None, latents=None, cond_y=False, embed=False):
         x_b = gaussian_blur(x)
         z = torch.randn(x_b.shape, generator=generator).to(x.device)
         x_b += epsilon * z
+        if embed:
+            z = torch.randn(x_b.shape).to(x.device)
+            return z, x_b
         if cond_y:
             return x_b, x_b
         elif return_latents:
@@ -695,17 +701,17 @@ corruption_dict = {
     'projection_vec_ds': random_projection_vec_dataset,
 }
 
-def parse_latents(corruption, D, s=None, cond_y=False):
+def parse_latents(corruption, D, C=3, s=None, cond_y=False):
     """Parse the corruption function and return the latent dimensions."""
     if 'mask' in corruption:
         use_latents = True
-        latent_dim = [1, D, D] if not cond_y else [3, D, D]
+        latent_dim = [1, D, D] if not cond_y else [C, D, D]
     elif corruption == 'random_motion':
         use_latents = True
-        latent_dim = [1] if not cond_y else [3, D, D]
+        latent_dim = [1] if not cond_y else [C, D, D]
     elif corruption == 'random_motion2':
         use_latents = True
-        latent_dim = [1, D, D] if not cond_y else [3, D, D]
+        latent_dim = [1, D, D] if not cond_y else [C, D, D]
     elif corruption == 'mri_pix1d':
         if s is None:
             raise ValueError("For 'mri_pix1d', 's' must be provided.")
@@ -718,15 +724,16 @@ def parse_latents(corruption, D, s=None, cond_y=False):
         latent_dim = [int(s**2), D, D]
     elif corruption == 'jpeg_compress':
         use_latents = True
-        latent_dim = [1] if not cond_y else [3, D, D]
+        latent_dim = [1] if not cond_y else [C, D, D]
     elif corruption.startswith('projection'):
         use_latents = True
         latent_dim = [1] # artificial, to be corrected later
     elif 'blur' in corruption:
-        if not cond_y:
+        if  cond_y:
+            use_latents = True
+            latent_dim = [C, D, D]
+        else:
             use_latents = False
             latent_dim = None
-        else:
-            use_latents = True
-            latent_dim = [3, D, D]
+            
     return use_latents, latent_dim

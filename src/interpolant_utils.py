@@ -52,15 +52,16 @@ class MLPVelocityField(torch.nn.Module):
 
 class DeconvolvingInterpolant(torch.nn.Module):
 
-    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1, diffusion_coeff=0.0, gamma_scale=0.0, sampler='euler', randomize_time=False, n_transports=1, cond_y=False):
+    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1, \
+                diffusion_coeff=0.0, gamma_scale=0.0, sampler='euler', randomize_time=False, \
+                n_transports=1):
         super().__init__()
         self.push_fwd = push_fwd
         self.n_steps = n_steps
         self.delta_t = 1 / self.n_steps
         self.sqrt_delta_t = self.delta_t**0.5
         self.randomize_time = randomize_time
-        self.use_latents = use_latents or cond_y
-        self.cond_y = cond_y
+        self.use_latents = use_latents 
         self.alpha = alpha
         self.resamples = resamples
         self.diffusion_coeff = diffusion_coeff
@@ -95,7 +96,7 @@ class DeconvolvingInterpolant(torch.nn.Module):
 
         batch_size = x.shape[0]            
         for i in range(self.resamples):
-            x1, latent1 = self.push_fwd(x0, return_latents=True, cond_y=self.cond_y)
+            x1, latent1 = self.push_fwd(x0, return_latents=True)
             latent1 = latent1 if self.use_latents else None
 
             # pick data with probabability 1-alpha
@@ -218,15 +219,15 @@ class DeconvolvingInterpolant(torch.nn.Module):
 
 class DeconvolvingInterpolantCombined(torch.nn.Module):
 
-    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1,  gamma_scale=0.1, sampler='euler', randomize_time=False, n_transports=1, cond_y=False):
+    def __init__(self, push_fwd, use_latents=False, n_steps=80, alpha=1.0, resamples=1,  \
+                 gamma_scale=0.1, sampler='euler', randomize_time=False, n_transports=1):
         super().__init__()
         print("Learning combined drift from drift + score network")
         self.push_fwd = push_fwd
         self.n_steps = n_steps
         self.delta_t = 1 / self.n_steps
         self.sqrt_delta_t = self.delta_t**0.5
-        self.use_latents = use_latents or cond_y
-        self.cond_y = cond_y
+        self.use_latents = use_latents
         self.alpha = alpha
         self.resamples = resamples
         self.gamma_scale = gamma_scale
@@ -257,7 +258,7 @@ class DeconvolvingInterpolantCombined(torch.nn.Module):
                 
         batch_size = x.shape[0]            
         for i in range(self.resamples):
-            x1, latent1 = self.push_fwd(x0, return_latents=True, cond_y=self.cond_y)
+            x1, latent1 = self.push_fwd(x0, return_latents=True)
             latent1 = latent1 if self.use_latents else None
 
             # pick data with probabability 1-alpha                                                                                                                        
