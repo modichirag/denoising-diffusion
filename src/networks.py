@@ -181,6 +181,23 @@ class AttentionOp(torch.autograd.Function):
         dk = torch.einsum('ncq,nqk->nck', q.to(torch.float32), db).to(k.dtype) / np.sqrt(k.shape[1])
         return dq, dk
 
+# class FiLMGenerator(nn.Module):
+#     def __init__(self, in_channels, hidden_channels, eps=1e-5):
+#         super().__init__()
+#         self.convnet = nn.Sequential(
+#             GroupNorm(num_channels=in_channels, eps=eps),
+#             Conv2d(in_channels=in_channels, out_channels=hidden_channels, kernel=3, padding=1),
+#             nn.ReLU(),
+#             Conv2d(in_channels=hidden_channels, out_channels=hidden_channels, kernel=3, padding=1),
+#             nn.ReLU(),
+#             nn.AdaptiveAvgPool2d(1), 
+#         )
+#         self.mlp = nn.Linear(hidden_channels, hidden_channels * 2)
+
+#     def forward(self, x):
+#         x = self.convnet(x).squeeze(-1).squeeze(-1)
+#         x = self.mlp(x)
+#         return x
 #----------------------------------------------------------------------------
 # Unified U-Net block with optional up/downsampling and self-attention.
 # Represents the union of all features employed by the DDPM++, NCSN++, and
@@ -193,7 +210,7 @@ class UNetBlock(torch.nn.Module):
         num_heads=None, channels_per_head=64, dropout=0, skip_scale=1, eps=1e-5,
         resample_filter=[1,1], resample_proj=False, adaptive_scale=True,
         init=dict(), init_zero=dict(init_weight=0), init_attn=None,
-        gated=False
+        gated=False, film_channels=0,
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -203,6 +220,7 @@ class UNetBlock(torch.nn.Module):
         self.dropout = dropout
         self.skip_scale = skip_scale
         self.adaptive_scale = adaptive_scale
+        self.film_channels = film_channels
 
         self.norm0 = GroupNorm(num_channels=in_channels, eps=eps)
         self.conv0 = Conv2d(in_channels=in_channels, out_channels=out_channels, kernel=3, up=up, down=down, resample_filter=resample_filter, gated=gated, **init)
@@ -222,19 +240,44 @@ class UNetBlock(torch.nn.Module):
             self.qkv = Conv2d(in_channels=out_channels, out_channels=out_channels*3, kernel=1, gated=gated, **(init_attn if init_attn is not None else init))
             self.proj = Conv2d(in_channels=out_channels, out_channels=out_channels, kernel=1, gated=gated, **init_zero)
 
-    def forward(self, x, emb=None):
+        if self.film_channels:
+            self.film_layer = Linear(in_features=film_channels, out_features=2*out_channels, **init)
+
+    def forward(self, x, emb=None, y=None, film_weight=1.):
         orig = x
         x = self.conv0(silu(self.norm0(x)))
 
+        film_scale, film_shift = 0., 0.
+        if y is not None and self.film_channels:
+            film_params = self.film_layer(y) * film_weight
+            film_params = film_params.unsqueeze(2).unsqueeze(3).to(x.dtype)
+            film_scale, film_shift = film_params.chunk(chunks=2, dim=1)
+                        
         if emb is not None:
             params = self.affine(emb).unsqueeze(2).unsqueeze(3).to(x.dtype)
             if self.adaptive_scale:
                 scale, shift = params.chunk(chunks=2, dim=1)
-                x = silu(torch.addcmul(shift, self.norm1(x), scale + 1))
+                x = silu(torch.addcmul(shift + film_shift, self.norm1(x), scale + film_scale + 1))
             else:
-                x = silu(self.norm1(x.add_(params)))
+                if y is not None and self.film_channels:
+                    x = silu(torch.addcmul(params + film_shift, self.norm1(x), film_scale + 1))
+                else:
+                    x = silu(self.norm1(x.add_(params)))
         else:
-            x = self.norm1(x)
+            if self.film_channels:
+                x = silu(torch.addcmul(film_shift, self.norm1(x), film_scale + 1))
+            else:
+                x = self.norm1(x)
+
+        # if emb is not None:
+        #     params = self.affine(emb).unsqueeze(2).unsqueeze(3).to(x.dtype)
+        #     if self.adaptive_scale:
+        #         scale, shift = params.chunk(chunks=2, dim=1)
+        #         x = silu(torch.addcmul(shift, self.norm1(x), scale + 1))
+        #     else:
+        #         x = silu(self.norm1(x.add_(params)))
+        # else:
+        #     x = self.norm1(x)
 
         x = self.conv1(torch.nn.functional.dropout(x, p=self.dropout, training=self.training))
         x = x.add_(self.skip(orig) if self.skip is not None else orig)
@@ -656,6 +699,189 @@ class ConditionalDhariwalUNet(torch.nn.Module): #Difference in handling label_di
             if x.shape[1] != block.in_channels:
                 x = torch.cat([x, skips.pop()], dim=1)
             x = block(x, emb)
+        x = self.out_conv(silu(self.out_norm(x)))
+        return x
+
+
+
+#----------------------------------------------------------------------------
+class ConditionalConvEncoder(nn.Module):
+    def __init__(self, img_resolution, in_channels, emb_channels, channel_mult):
+        super().__init__()
+        self.enc = torch.nn.ModuleDict()
+        res = img_resolution
+        cin = in_channels
+        for level, mult in enumerate(channel_mult):
+            cout = emb_channels * mult
+            res = img_resolution >> level
+            if level == 0:
+                self.enc[f'{res}x{res}'] = nn.Sequential(Conv2d(in_channels=cin, out_channels=cout, kernel=3),
+                                                nn.SiLU(), 
+                                                UNetBlock(in_channels=cout, out_channels=cout, emb_channels=0)
+                                                )
+            else:            
+                self.enc[f'{res}x{res}'] = nn.Sequential(UNetBlock(in_channels=cin, out_channels=cout, emb_channels=0, down=True),
+                                                    nn.SiLU(),
+                                                    ) 
+                # self.enc[f'level_{level}'] = nn.Sequential(Conv2d(in_channels=cin, out_channels=cout, kernel=3, down=True),
+                #                                     nn.SiLU()) 
+            cin = cout
+        
+    def forward(self, y):
+        feats = {}
+        for block in self.enc:
+            y = self.enc[block](y)
+            feats[block] = y.mean(dim=(2, 3))
+        return feats
+
+
+class ConditionalDhariwalUNetFiLM(torch.nn.Module): #Difference in handling label_dim and class_labels, can be images
+    def __init__(self,
+        img_resolution,                     # Image resolution at input/output.
+        in_channels,                        # Number of color channels at input.
+        out_channels,                       # Number of color channels at output.
+        film_resolution,
+        film_channels,
+        latent_dim          = None,          # Number of class labels, 0 = unconditional.
+        augment_dim         = 0,            # Augmentation label dimensionality, 0 = no augmentation.
+
+        model_channels      = 192,          # Base multiplier for the number of channels.
+        channel_mult        = [1,2,3,4],    # Per-resolution multipliers for the number of channels.
+        channel_mult_emb    = 4,            # Multiplier for the dimensionality of the embedding vector.
+        num_blocks          = 3,            # Number of residual blocks per resolution.
+        attn_resolutions    = [32,16,8],    # List of resolutions with self-attention.
+        dropout             = 0.10,         # List of resolutions with self-attention.
+        label_dropout       = 0,            # Dropout probability of class labels for classifier-free guidance.
+        gated               = False,         # Use gated convolutions? 
+        latent_channels     = 8,
+        max_pos_embedding = 10_000,
+        zero_emb_channels_bwd = True,
+    ):
+        super().__init__()
+        self.label_dropout = label_dropout
+        emb_channels = model_channels * channel_mult_emb
+        init = dict(init_mode='kaiming_uniform', init_weight=np.sqrt(1/3), init_bias=np.sqrt(1/3))
+        init_zero = dict(init_mode='kaiming_uniform', init_weight=0, init_bias=0)
+        block_kwargs = dict(emb_channels=emb_channels, channels_per_head=64, dropout=dropout, init=init, init_zero=init_zero, gated=gated)
+
+        # Mapping.
+        self.map_noise = PositionalEmbedding(num_channels=model_channels, max_positions=max_pos_embedding)
+        self.map_augment = Linear(in_features=augment_dim, out_features=model_channels, bias=False, **init_zero) if augment_dim else None
+        self.map_layer0 = Linear(in_features=model_channels, out_features=emb_channels, **init)
+        self.map_layer1 = Linear(in_features=emb_channels, out_features=emb_channels, **init)
+        self.latent_dim = latent_dim if latent_dim is not None else []
+        if latent_dim is None:
+            self.map_latents = None
+            latent_in_channels = 0
+        elif len(latent_dim) == 1:
+            latent_dim = int(latent_dim[0])
+            print("1 D latents. Use linear to process and then embed")
+            self.map_latents = torch.nn.Sequential(
+                Linear(in_features=latent_dim, out_features=emb_channels, bias=False, init_mode='kaiming_normal', init_weight=np.sqrt(latent_dim)),
+                torch.nn.SiLU(),
+                Linear(in_features=emb_channels, out_features=emb_channels, bias=False, init_mode='kaiming_normal', init_weight=np.sqrt(latent_dim)),
+                torch.nn.SiLU(),
+                Linear(in_features=emb_channels, out_features=emb_channels, bias=False, init_mode='kaiming_normal', init_weight=np.sqrt(latent_dim))
+            )
+            latent_in_channels = 0
+        elif len(latent_dim) in [2, 3]:
+            if len(latent_dim) == 3:
+                C, H, W = latent_dim
+            if len(latent_dim) == 2:    
+                H, W = latent_dim
+                C = 1
+            print(f"2/3D latent with {C} channels")
+            print("Use U-net to process and then concatenate")            
+            latent_in_channels = C
+            latent_channels = max(latent_in_channels, latent_channels)
+            emb_channels_backward_compatibility = 0 if zero_emb_channels_bwd else latent_channels
+            self.map_latents = torch.nn.Sequential(
+                Conv2d(in_channels=C, out_channels=latent_channels, kernel=3, gated=gated, **init),
+                UNetBlock(in_channels=latent_channels, out_channels=latent_channels, emb_channels=emb_channels_backward_compatibility, 
+                            attention=False, dropout=0, init=init, init_zero=init_zero, gated=gated),
+                Conv2d(in_channels=latent_channels, out_channels=C, kernel=3, gated=gated, **init)
+            )
+        else:
+            raise TypeError(f"label_dim must be None, int, float or list, but got {type(latent_dim)}")
+
+        if film_channels != 0:
+            self.film_encoder = ConditionalConvEncoder(img_resolution=film_resolution, in_channels=film_channels, emb_channels=model_channels, channel_mult=channel_mult)
+        else:
+            self.film_encoder = None
+
+        # Encoder.
+        self.enc = torch.nn.ModuleDict()
+        cout = in_channels + latent_in_channels
+        for level, mult in enumerate(channel_mult):
+            res = img_resolution >> level
+            if level == 0:
+                cin = cout
+                cout = model_channels * mult
+                self.enc[f'{res}x{res}_conv'] = Conv2d(in_channels=cin, out_channels=cout, kernel=3, gated=gated, **init)
+            else:
+                self.enc[f'{res}x{res}_down'] = UNetBlock(in_channels=cout, out_channels=cout, down=True, **block_kwargs)
+            for idx in range(num_blocks):
+                cin = cout
+                cout = model_channels * mult
+                cfilm = model_channels * mult if self.film_encoder else 0
+                self.enc[f'{res}x{res}_block{idx}'] = UNetBlock(in_channels=cin, out_channels=cout, attention=(res in attn_resolutions), film_channels=cfilm, **block_kwargs)
+        skips = [block.out_channels for block in self.enc.values()]
+
+        # Decoder.
+        self.dec = torch.nn.ModuleDict()
+        for level, mult in reversed(list(enumerate(channel_mult))):
+            res = img_resolution >> level
+            cfilm = model_channels * mult if self.film_encoder else 0
+            if level == len(channel_mult) - 1:
+                self.dec[f'{res}x{res}_in0'] = UNetBlock(in_channels=cout, out_channels=cout, film_channels=cfilm,  attention=True, **block_kwargs)
+                self.dec[f'{res}x{res}_in1'] = UNetBlock(in_channels=cout, out_channels=cout, film_channels=cfilm,  **block_kwargs)
+            else:
+                self.dec[f'{res}x{res}_up'] = UNetBlock(in_channels=cout, out_channels=cout, up=True, **block_kwargs)
+            for idx in range(num_blocks + 1):
+                cin = cout + skips.pop()
+                cout = model_channels * mult
+                self.dec[f'{res}x{res}_block{idx}'] = UNetBlock(in_channels=cin, out_channels=cout, film_channels=cfilm, attention=(res in attn_resolutions), **block_kwargs)
+        self.out_norm = GroupNorm(num_channels=cout)
+        self.out_conv = Conv2d(in_channels=cout, out_channels=out_channels, kernel=3, gated=gated, **init_zero)
+
+
+    def forward(self, x, noise_labels, latents=None, augment_labels=None, y=None):
+        # Mapping.
+        # print('forward')
+        emb = self.map_noise(noise_labels)
+        if self.map_augment is not None and augment_labels is not None:
+            emb = emb + self.map_augment(augment_labels)
+        emb = silu(self.map_layer0(emb))
+        emb = self.map_layer1(emb)
+        if len(self.latent_dim) == 1:
+            emb = emb + self.map_latents(latents)
+        emb = silu(emb)
+            
+        if len(self.latent_dim) in [2, 3]:
+            latents = self.map_latents(latents)
+            x = torch.cat([x, latents], dim=1) 
+            # print('concat latents', x.shape)
+
+        if self.film_encoder:
+            film_feats = self.film_encoder(y)
+
+        # Encoder.
+        skips = []
+        for block_name in self.enc:
+            block = self.enc[block_name]
+            res = block_name.split('x')[0]
+            y = film_feats[f'{res}x{res}'] if self.film_encoder else None
+            x = block(x, emb, y=y) if isinstance(block, UNetBlock) else block(x)
+            skips.append(x)
+
+        # Decoder.
+        for block_name in self.dec:
+            block = self.dec[block_name]
+            res = block_name.split('x')[0]
+            y = film_feats[f'{res}x{res}'] if self.film_encoder else None
+            if x.shape[1] != block.in_channels:
+                x = torch.cat([x, skips.pop()], dim=1)
+            x = block(x, emb, y=y)
         x = self.out_conv(silu(self.out_norm(x)))
         return x
 
